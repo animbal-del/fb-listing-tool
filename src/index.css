@@ -1,0 +1,69 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  font-family: 'DM Sans', sans-serif;
+  background-color: #0A1120;
+  color: #E1E5EC;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #131D30; }
+::-webkit-scrollbar-thumb { background: #2C3A5A; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #3D4F72; }
+
+/* Focus ring */
+:focus-visible { outline: 2px solid #FF6B35; outline-offset: 2px; }
+
+/* Fade in */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-up { animation: fadeUp 0.35s ease both; }
+
+/* Status badges */
+.badge-available {
+  @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-jade-500/15 text-jade-400 border border-jade-500/25;
+}
+.badge-rented {
+  @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-flame-500/15 text-flame-400 border border-flame-500/25;
+}
+
+/* Card */
+.card {
+  @apply bg-ink-800 border border-ink-700 rounded-xl;
+}
+
+/* Input */
+.input {
+  @apply w-full bg-ink-900 border border-ink-700 rounded-lg px-3 py-2 text-ink-100
+         placeholder-ink-400 text-sm
+         focus:outline-none focus:border-flame-500 focus:ring-1 focus:ring-flame-500/40
+         transition-colors;
+}
+
+/* Label */
+.label {
+  @apply block text-xs font-medium text-ink-300 mb-1 uppercase tracking-wider;
+}
+
+/* Primary button */
+.btn-primary {
+  @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg
+         bg-flame-500 hover:bg-flame-400 text-white text-sm font-medium
+         transition-colors disabled:opacity-40 disabled:cursor-not-allowed;
+}
+
+/* Ghost button */
+.btn-ghost {
+  @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg
+         bg-ink-700 hover:bg-ink-600 text-ink-200 text-sm font-medium
+         transition-colors;
+}
