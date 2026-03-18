@@ -8,17 +8,17 @@ import { createClient } from '@supabase/supabase-js'
 import { existsSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
-import http from 'http'
-import https from 'https'
+import httpProxy from 'http-proxy'
 import 'dotenv/config'
 
 const __dir = dirname(fileURLToPath(import.meta.url))
 const app = express()
 const PORT = process.env.PORT || 3001
+
 const REMOTE_VIEWER_URL =
   process.env.REMOTE_VIEWER_URL ||
-  'http://147.93.98.94:3001/browser/vnc.html?autoconnect=true&resize=remote&path=websockify'
-  
+  'http://147.93.98.94:3001/browser/vnc.html?autoconnect=true&resize=remote&path=browser/websockify'
+
 app.use(cors({ origin: '*' }))
 app.use(express.json())
 
@@ -96,50 +96,35 @@ async function stopRemoteDesktop() {
   return { ok: true }
 }
 
-// ── Internal browser proxy: /browser/* -> http://127.0.0.1:6080/* ─────────
+// noVNC HTTP + WebSocket proxy to local 6080
+const browserProxy = httpProxy.createProxyServer({
+  target: 'http://127.0.0.1:6080',
+  ws: true,
+  changeOrigin: true,
+  xfwd: true,
+})
+
+browserProxy.on('error', (err, req, res) => {
+  console.error('Browser proxy error:', err.message)
+
+  if (res && !res.headersSent) {
+    res.statusCode = 502
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: `Browser proxy failed: ${err.message}` }))
+    return
+  }
+
+  try { res?.end?.() } catch {}
+})
+
 app.use('/browser', (req, res) => {
-  const upstreamPath = req.originalUrl.replace(/^\/browser/, '') || '/'
-  const options = {
-    hostname: '127.0.0.1',
-    port: 6080,
-    path: upstreamPath,
-    method: req.method,
-    headers: {
-      ...req.headers,
-      host: '127.0.0.1:6080',
-    },
-  }
-
-  const proxyReq = http.request(options, proxyRes => {
-    res.status(proxyRes.statusCode || 502)
-
-    Object.entries(proxyRes.headers).forEach(([key, value]) => {
-      if (typeof value !== 'undefined') {
-        res.setHeader(key, value)
-      }
-    })
-
-    proxyRes.pipe(res)
-  })
-
-  proxyReq.on('error', err => {
-    if (!res.headersSent) {
-      res.status(502).json({ error: `Browser proxy failed: ${err.message}` })
-    } else {
-      res.end()
-    }
-  })
-
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
-    req.pipe(proxyReq)
-  } else {
-    proxyReq.end()
-  }
+  req.url = req.originalUrl.replace(/^\/browser/, '') || '/'
+  browserProxy.web(req, res)
 })
 
 app.get('/', (_req, res) => res.json({
   status: '✅ FB Listing Bot Server running',
-  version: '4.1',
+  version: '4.2',
   supabase: supabase ? '✅ connected' : '❌ not configured',
   env_check: { url: !!SUPA_URL, key: !!SUPA_KEY },
   remote_viewer_url: REMOTE_VIEWER_URL,
@@ -364,7 +349,7 @@ app.post('/bots/:id/queue', (req, res) => {
   res.json({ ok: true, queue: campaignIds })
 })
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log('\n🟢 FB Listing Bot Server started')
   console.log(`   URL:      http://localhost:${PORT}`)
   console.log(`   Health:   http://localhost:${PORT}/health`)
@@ -378,4 +363,14 @@ app.listen(PORT, () => {
   } else {
     console.log('\n   Keep this terminal open.\n')
   }
+})
+
+server.on('upgrade', (req, socket, head) => {
+  if (!req.url?.startsWith('/browser/')) {
+    socket.destroy()
+    return
+  }
+
+  req.url = req.url.replace(/^\/browser/, '') || '/'
+  browserProxy.ws(req, socket, head)
 })
