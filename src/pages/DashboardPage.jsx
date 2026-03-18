@@ -52,7 +52,7 @@ async function fetchBots() {
 }
 
 async function loginBot(id) {
-  return await apiFetch(`/bots/${id}/login`, { method: 'POST' })
+  return await apiFetch(`/bots/${id}/login-remote`, { method: 'POST' })
 }
 
 async function startBot(id, campaignId) {
@@ -93,9 +93,6 @@ async function getBotQueue(id) {
   return await apiFetch(`/bots/${id}/queue`, { headers: {} })
 }
 
-// ─────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────
 function CopyBtn({ value, label }) {
   const [copied, setCopied] = useState(false)
   return (
@@ -130,9 +127,6 @@ function ProgressBar({ total, posted, failed, skipped }) {
   )
 }
 
-// ─────────────────────────────────────────────────────────
-// Post Activity Log — shows every queue item with status
-// ─────────────────────────────────────────────────────────
 const STATUS_ICON = {
   posted:  <CheckCircle size={13} className="text-jade-400 flex-shrink-0"/>,
   failed:  <XCircle     size={13} className="text-flame-400 flex-shrink-0"/>,
@@ -297,8 +291,6 @@ function CampaignRow({ campaign, onToggle }) {
   )
 }
 
-const EMPTY_BOT = { name: '', fb_email: '', fb_password: '' }
-
 function BotFormModal({ open, initial, onClose, onSaved }) {
   const isEdit  = !!initial?.id
   const formKey = open ? (isEdit ? initial.id : 'new') : 'closed'
@@ -334,10 +326,10 @@ function BotFormInner({ initial, isEdit, onClose, onSaved }) {
     try {
       const slug = form.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
       const payload = {
-        name:               form.name.trim(),
-        fb_email:           form.fb_email.trim(),
-        fb_password:        form.fb_password.trim(),
-        session_file:       isEdit
+        name:         form.name.trim(),
+        fb_email:     form.fb_email.trim(),
+        fb_password:  form.fb_password.trim(),
+        session_file: isEdit
           ? (initial.session_file || `fb_session_${slug}_${Date.now()}.json`)
           : `fb_session_${slug}_${Date.now()}.json`,
       }
@@ -398,11 +390,7 @@ function BotFormInner({ initial, isEdit, onClose, onSaved }) {
         </>
       )}
 
-      {tab === 'settings' && (
-        <>
-          <p className="text-xs text-ink-500">Bot timing settings are managed on the server side for now.</p>
-        </>
-      )}
+      {tab === 'settings' && <p className="text-xs text-ink-500">Bot timing settings are managed on the server side for now.</p>}
 
       {error && <div className="bg-red-500/10 border border-red-500/25 rounded-lg px-3 py-2 text-xs text-red-400">{error}</div>}
       <div className="flex gap-2 pt-1">
@@ -433,7 +421,7 @@ function LogViewerModal({ open, bot, onClose }) {
     if (line.includes('❌') || line.includes('failed')) return 'text-flame-400'
     if (line.includes('⚠️') || line.includes('Could')) return 'text-yellow-400'
     if (line.includes('⏳')) return 'text-ink-500'
-    if (line.includes('🔐') || line.includes('🚀') || line.includes('📤')) return 'text-flame-300'
+    if (line.includes('🔐') || line.includes('🚀') || line.includes('📤') || line.includes('🖥️')) return 'text-flame-300'
     return 'text-ink-300'
   }
 
@@ -656,10 +644,18 @@ function BotCard({ bot, campaigns, serverOnline, onEdit, onDelete, onRefresh }) 
 
   const doLogin = async () => {
     setBusy('login')
-    try { await loginBot(bot.id) } catch {}
-    onRefresh()
-    setBusy(null)
-    setLogOpen(true)
+    try {
+      const data = await loginBot(bot.id)
+      if (data?.viewer_url) {
+        window.open(data.viewer_url, '_blank', 'noopener,noreferrer')
+      }
+      onRefresh()
+      setLogOpen(true)
+    } catch (err) {
+      alert(err.message || 'Could not open remote login session')
+    } finally {
+      setBusy(null)
+    }
   }
 
   const doStart = async (botId, campaignId) => {
@@ -717,12 +713,23 @@ function BotCard({ bot, campaigns, serverOnline, onEdit, onDelete, onRefresh }) 
 
         <div className="px-3 pb-3 space-y-2">
           {!bot.isRunning && (
-            <button onClick={doLogin} disabled={!canLogin || busy === 'login'}
+            <button
+              onClick={doLogin}
+              disabled={!canLogin || busy === 'login'}
               className={`w-full py-2 text-xs rounded-xl border font-medium flex items-center justify-center gap-1.5 transition-all
-                ${canLogin && busy !== 'login' ? 'bg-ink-700 border-ink-600 text-ink-300 hover:bg-ink-600' : 'bg-ink-800/50 border-ink-700/50 text-ink-600 cursor-not-allowed'}`}>
-              {busy === 'login' ? <><span className="animate-spin inline-block">⟳</span> Logging in…</> : <><LogIn size={12}/> {bot.hasSession ? 'Re-login' : 'Login to Facebook'}</>}
+                ${canLogin && busy !== 'login' ? 'bg-ink-700 border-ink-600 text-ink-300 hover:bg-ink-600' : 'bg-ink-800/50 border-ink-700/50 text-ink-600 cursor-not-allowed'}`}
+            >
+              {busy === 'login'
+                ? <><span className="animate-spin inline-block">⟳</span> Opening session…</>
+                : <><LogIn size={12}/> {bot.hasSession ? 'Open Remote Re-login' : 'Open Login Session'}</>
+              }
             </button>
           )}
+
+          <p className="text-[11px] text-ink-500 px-1">
+            Opens a hosted browser tab for Facebook login and UI training.
+          </p>
+
           {canStop ? (
             <button onClick={doStop} disabled={busy === 'stop'}
               className="w-full py-2 text-xs rounded-xl border font-medium flex items-center justify-center gap-1.5 bg-flame-500/10 border-flame-500/30 text-flame-400 hover:bg-flame-500/20 transition-all">
