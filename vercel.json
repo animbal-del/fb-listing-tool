@@ -1,0 +1,8 @@
+{
+    "rewrites": [
+      {
+        "source": "/bot-api/:path*",
+        "destination": "http://147.93.98.94:3001/:path*"
+      }
+    ]
+  }
