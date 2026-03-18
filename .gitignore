@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+.env.local
+bot/.env
+playwright-report/
+temp_photos/
+*.log
+.DS_Store
