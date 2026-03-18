@@ -8,6 +8,8 @@ import { createClient } from '@supabase/supabase-js'
 import { existsSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
+import http from 'http'
+import https from 'https'
 import 'dotenv/config'
 
 const __dir = dirname(fileURLToPath(import.meta.url))
@@ -46,9 +48,9 @@ async function db(fn) {
   }
 }
 
-const procs = {}      // botId -> { proc, type, logs[], campaignId }
-const logSubs = {}    // botId -> [res, ...]
-const botQueues = {}  // botId -> [campaignId, ...]
+const procs = {}
+const logSubs = {}
+const botQueues = {}
 
 function pushLog(botId, line) {
   if (!procs[botId]) procs[botId] = { proc: null, type: null, logs: [], campaignId: null }
@@ -92,9 +94,50 @@ async function stopRemoteDesktop() {
   return { ok: true }
 }
 
+// ── Internal browser proxy: /browser/* -> http://127.0.0.1:6080/* ─────────
+app.use('/browser', (req, res) => {
+  const upstreamPath = req.originalUrl.replace(/^\/browser/, '') || '/'
+  const options = {
+    hostname: '127.0.0.1',
+    port: 6080,
+    path: upstreamPath,
+    method: req.method,
+    headers: {
+      ...req.headers,
+      host: '127.0.0.1:6080',
+    },
+  }
+
+  const proxyReq = http.request(options, proxyRes => {
+    res.status(proxyRes.statusCode || 502)
+
+    Object.entries(proxyRes.headers).forEach(([key, value]) => {
+      if (typeof value !== 'undefined') {
+        res.setHeader(key, value)
+      }
+    })
+
+    proxyRes.pipe(res)
+  })
+
+  proxyReq.on('error', err => {
+    if (!res.headersSent) {
+      res.status(502).json({ error: `Browser proxy failed: ${err.message}` })
+    } else {
+      res.end()
+    }
+  })
+
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    req.pipe(proxyReq)
+  } else {
+    proxyReq.end()
+  }
+})
+
 app.get('/', (_req, res) => res.json({
   status: '✅ FB Listing Bot Server running',
-  version: '4.0',
+  version: '4.1',
   supabase: supabase ? '✅ connected' : '❌ not configured',
   env_check: { url: !!SUPA_URL, key: !!SUPA_KEY },
   remote_viewer_url: REMOTE_VIEWER_URL,
