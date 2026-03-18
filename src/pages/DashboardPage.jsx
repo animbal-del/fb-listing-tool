@@ -1,15 +1,97 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useCampaigns } from '../hooks/useCampaigns'
 import { supabase } from '../lib/supabase'
-import { checkServer, fetchBots, loginBot, startBot, stopBot, streamLogs, setBotQueue, getBotQueue } from '../lib/botServer'
 import StatusBadge from '../components/StatusBadge'
 import Modal from '../components/Modal'
 import {
   Pause, Play, Download, RefreshCw, ChevronDown, ChevronUp,
   Copy, Check, Bot, Plus, Trash2, Eye, EyeOff, Edit2,
   LogIn, Square, Zap, AlertTriangle, Terminal,
-  CheckCircle, Wifi, WifiOff, Clock, XCircle, ImageOff, ListPlus, GripVertical
+  CheckCircle, Wifi, WifiOff, Clock, XCircle, ImageOff, ListPlus
 } from 'lucide-react'
+
+const BOT_API = (import.meta.env.VITE_BOT_SERVER_URL || '/bot-api').replace(/\/$/, '')
+
+async function apiFetch(path, options = {}) {
+  const res = await fetch(`${BOT_API}${path}`, {
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
+    },
+    ...options,
+  })
+
+  const contentType = res.headers.get('content-type') || ''
+  const isJson = contentType.includes('application/json')
+  const body = isJson ? await res.json() : await res.text()
+
+  if (!res.ok) {
+    const message =
+      typeof body === 'object' && body?.error
+        ? body.error
+        : typeof body === 'string' && body
+          ? body
+          : `Request failed: ${res.status}`
+    throw new Error(message)
+  }
+
+  return body
+}
+
+async function checkServer() {
+  try {
+    const data = await apiFetch('/health', { headers: {} })
+    return !!data?.ok
+  } catch {
+    return false
+  }
+}
+
+async function fetchBots() {
+  return await apiFetch('/bots', { headers: {} })
+}
+
+async function loginBot(id) {
+  return await apiFetch(`/bots/${id}/login`, { method: 'POST' })
+}
+
+async function startBot(id, campaignId) {
+  return await apiFetch(`/bots/${id}/start`, {
+    method: 'POST',
+    body: JSON.stringify({ campaignId }),
+  })
+}
+
+async function stopBot(id) {
+  return await apiFetch(`/bots/${id}/stop`, { method: 'POST' })
+}
+
+function streamLogs(id, onLine) {
+  const es = new EventSource(`${BOT_API}/bots/${id}/logs`)
+  es.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data)
+      if (data?.line) onLine(data.line)
+    } catch {}
+  }
+  es.onerror = () => {
+    try { es.close() } catch {}
+  }
+  return () => {
+    try { es.close() } catch {}
+  }
+}
+
+async function setBotQueue(id, campaignIds) {
+  return await apiFetch(`/bots/${id}/queue`, {
+    method: 'POST',
+    body: JSON.stringify({ campaignIds }),
+  })
+}
+
+async function getBotQueue(id) {
+  return await apiFetch(`/bots/${id}/queue`, { headers: {} })
+}
 
 // ─────────────────────────────────────────────────────────
 // Helpers
@@ -69,7 +151,6 @@ function PostActivityLog({ items }) {
   const filters = ['all', 'posted', 'failed', 'pending']
   const visible = filter === 'all' ? items : items.filter(i => i.status === filter)
 
-  // Sort: failed first, then posted (most recent), then pending
   const sorted = [...visible].sort((a, b) => {
     const order = { failed: 0, posted: 1, skipped: 2, pending: 3 }
     const oa = order[a.status] ?? 4
@@ -81,7 +162,6 @@ function PostActivityLog({ items }) {
 
   return (
     <div className="border-t border-ink-700">
-      {/* Filter tabs */}
       <div className="flex gap-1 px-4 pt-3 pb-2">
         {filters.map(f => {
           const count = f === 'all' ? items.length : items.filter(i => i.status === f).length
@@ -96,7 +176,6 @@ function PostActivityLog({ items }) {
         })}
       </div>
 
-      {/* List */}
       <div className="max-h-80 overflow-y-auto">
         {sorted.length === 0 ? (
           <p className="text-center text-ink-600 text-xs py-8">No items to show</p>
@@ -164,9 +243,6 @@ function PostActivityLog({ items }) {
   )
 }
 
-// ─────────────────────────────────────────────────────────
-// Campaign Row
-// ─────────────────────────────────────────────────────────
 function CampaignRow({ campaign, onToggle }) {
   const [expanded, setExpanded] = useState(false)
   const items   = campaign.post_queue || []
@@ -221,9 +297,6 @@ function CampaignRow({ campaign, onToggle }) {
   )
 }
 
-// ─────────────────────────────────────────────────────────
-// Bot Form
-// ─────────────────────────────────────────────────────────
 const EMPTY_BOT = { name: '', fb_email: '', fb_password: '' }
 
 function BotFormModal({ open, initial, onClose, onSaved }) {
@@ -247,17 +320,17 @@ function BotFormInner({ initial, isEdit, onClose, onSaved }) {
   const [showPw, setShowPw] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error,  setError]  = useState('')
-  const [tab,    setTab]    = useState('account') // 'account' | 'settings'
+  const [tab,    setTab]    = useState('account')
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
   const save = async () => {
     if (!form.name.trim())        return setError('Bot name is required')
     if (!form.fb_email.trim())    return setError('Facebook email is required')
     if (!form.fb_password.trim()) return setError('Password is required')
-  
+
     setError('')
     setSaving(true)
-  
+
     try {
       const slug = form.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
       const payload = {
@@ -267,23 +340,15 @@ function BotFormInner({ initial, isEdit, onClose, onSaved }) {
         session_file:       isEdit
           ? (initial.session_file || `fb_session_${slug}_${Date.now()}.json`)
           : `fb_session_${slug}_${Date.now()}.json`,
-        max_posts_per_day:  Number(form.max_posts_per_day) || 18,
-        post_start_hour:    Number(form.post_start_hour) || 9,
-        post_end_hour:      Number(form.post_end_hour) || 20,
-        min_delay_seconds:  Number(form.min_delay_seconds) || 480,
-        max_delay_seconds:  Number(form.max_delay_seconds) || 900,
-        session_cap:        Number(form.session_cap) || 8,
-        session_break_min:  Number(form.session_break_min) || 120,
-        session_break_max:  Number(form.session_break_max) || 180,
       }
-  
+
       const query = isEdit
         ? supabase.from('bot_accounts').update(payload).eq('id', initial.id).select().single()
         : supabase.from('bot_accounts').insert([payload]).select().single()
-  
+
       const { error } = await query
       if (error) throw error
-  
+
       onSaved()
       onClose()
     } catch (err) {
@@ -295,7 +360,6 @@ function BotFormInner({ initial, isEdit, onClose, onSaved }) {
 
   return (
     <div className="space-y-4">
-      {/* Tabs */}
       <div className="flex gap-1 bg-ink-900 rounded-xl p-1">
         {[['account','Account'], ['settings','Bot Settings']].map(([v,l]) => (
           <button key={v} onClick={() => setTab(v)}
@@ -336,42 +400,7 @@ function BotFormInner({ initial, isEdit, onClose, onSaved }) {
 
       {tab === 'settings' && (
         <>
-          <p className="text-xs text-ink-500">These settings control how this bot behaves. Changes take effect on the next campaign start.</p>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="label">Max Posts / Day</label>
-              <input className="input" type="number" min={1} max={25} value={form.max_posts_per_day} onChange={e => set('max_posts_per_day', e.target.value)}/>
-            </div>
-            <div/>
-            <div>
-              <label className="label">Post From (hour)</label>
-              <input className="input" type="number" min={0} max={23} value={form.post_start_hour} onChange={e => set('post_start_hour', e.target.value)}/>
-            </div>
-            <div>
-              <label className="label">Post Until (hour)</label>
-              <input className="input" type="number" min={0} max={23} value={form.post_end_hour} onChange={e => set('post_end_hour', e.target.value)}/>
-            </div>
-            <div>
-              <label className="label">Min Delay (seconds)</label>
-              <input className="input" type="number" min={30} value={form.min_delay_seconds} onChange={e => set('min_delay_seconds', e.target.value)}/>
-              <p className="text-xs text-ink-600 mt-1">{Math.round(form.min_delay_seconds/60)} min</p>
-            </div>
-            <div>
-              <label className="label">Max Delay (seconds)</label>
-              <input className="input" type="number" min={30} value={form.max_delay_seconds} onChange={e => set('max_delay_seconds', e.target.value)}/>
-              <p className="text-xs text-ink-600 mt-1">{Math.round(form.max_delay_seconds/60)} min</p>
-            </div>
-            <div>
-              <label className="label">Session Cap (posts)</label>
-              <input className="input" type="number" min={1} max={20} value={form.session_cap} onChange={e => set('session_cap', e.target.value)}/>
-              <p className="text-xs text-ink-600 mt-1">Break after this many posts</p>
-            </div>
-            <div>
-              <label className="label">Break Duration (min)</label>
-              <input className="input" type="number" min={5} value={form.session_break_min} onChange={e => set('session_break_min', e.target.value)}/>
-              <p className="text-xs text-ink-600 mt-1">Min break length</p>
-            </div>
-          </div>
+          <p className="text-xs text-ink-500">Bot timing settings are managed on the server side for now.</p>
         </>
       )}
 
@@ -386,9 +415,6 @@ function BotFormInner({ initial, isEdit, onClose, onSaved }) {
   )
 }
 
-// ─────────────────────────────────────────────────────────
-// Log Viewer
-// ─────────────────────────────────────────────────────────
 function LogViewerModal({ open, bot, onClose }) {
   const [lines, setLines] = useState([])
   const stopRef   = useRef(null)
@@ -403,10 +429,10 @@ function LogViewerModal({ open, bot, onClose }) {
   useEffect(() => { if (open) bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [lines, open])
 
   const color = (line) => {
-    if (line.includes('✅') || line.includes('Posted'))   return 'text-jade-400'
-    if (line.includes('❌') || line.includes('failed'))   return 'text-flame-400'
-    if (line.includes('⚠️') || line.includes('Could'))   return 'text-yellow-400'
-    if (line.includes('⏳'))                              return 'text-ink-500'
+    if (line.includes('✅') || line.includes('Posted')) return 'text-jade-400'
+    if (line.includes('❌') || line.includes('failed')) return 'text-flame-400'
+    if (line.includes('⚠️') || line.includes('Could')) return 'text-yellow-400'
+    if (line.includes('⏳')) return 'text-ink-500'
     if (line.includes('🔐') || line.includes('🚀') || line.includes('📤')) return 'text-flame-300'
     return 'text-ink-300'
   }
@@ -431,9 +457,6 @@ function LogViewerModal({ open, bot, onClose }) {
   )
 }
 
-// ─────────────────────────────────────────────────────────
-// Start Bot Modal
-// ─────────────────────────────────────────────────────────
 function StartBotModal({ open, bot, campaigns, onClose, onConfirm }) {
   const [selected, setSelected] = useState('')
   const [starting, setStarting] = useState(false)
@@ -492,20 +515,16 @@ function StartBotModal({ open, bot, campaigns, onClose, onConfirm }) {
   )
 }
 
-
-// ─────────────────────────────────────────────────────────
-// Campaign Queue Modal — assign campaigns to run in sequence
-// ─────────────────────────────────────────────────────────
 function CampaignQueueModal({ open, bot, campaigns, onClose }) {
-  const [queue,   setQueue]   = useState([])
-  const [saving,  setSaving]  = useState(false)
+  const [queue, setQueue] = useState([])
+  const [saving, setSaving] = useState(false)
   const [serverUp, setServerUp] = useState(false)
 
   useEffect(() => {
     if (!open || !bot) return
     checkServer().then(up => {
       setServerUp(up)
-      if (up) getBotQueue(bot.id).then(r => setQueue(r?.queue || []))
+      if (up) getBotQueue(bot.id).then(r => setQueue(r?.queue || [])).catch(() => setQueue([]))
     })
   }, [open, bot?.id])
 
@@ -536,10 +555,9 @@ function CampaignQueueModal({ open, bot, campaigns, onClose }) {
     <Modal open={open} onClose={onClose} title={`Campaign Queue — ${bot.name}`} size="md">
       <div className="space-y-4">
         <p className="text-xs text-ink-400 leading-relaxed">
-          Add campaigns to this bot's queue. When the current campaign finishes, the bot automatically starts the next one — no manual intervention needed.
+          Add campaigns to this bot's queue. When the current campaign finishes, the bot automatically starts the next one.
         </p>
 
-        {/* Current queue */}
         <div>
           <label className="label">Queue ({queue.length} campaigns)</label>
           {queue.length === 0 ? (
@@ -550,9 +568,9 @@ function CampaignQueueModal({ open, bot, campaigns, onClose }) {
             <div className="space-y-2">
               {queue.map((cid, i) => {
                 const c = campaigns.find(x => x.id === cid)
-                const items   = c?.post_queue || []
+                const items = c?.post_queue || []
                 const pending = items.filter(x => x.status === 'pending').length
-                const posted  = items.filter(x => x.status === 'posted').length
+                const posted = items.filter(x => x.status === 'posted').length
                 return (
                   <div key={cid} className="flex items-center gap-2 bg-ink-800 border border-ink-700 rounded-xl px-3 py-2">
                     <span className="text-ink-600 text-xs w-5 flex-shrink-0">{i+1}.</span>
@@ -575,13 +593,12 @@ function CampaignQueueModal({ open, bot, campaigns, onClose }) {
           )}
         </div>
 
-        {/* Available campaigns to add */}
         {activeCampaigns.length > 0 && (
           <div>
             <label className="label">Add Campaign</label>
             <div className="space-y-1 max-h-48 overflow-y-auto">
               {activeCampaigns.filter(c => !queue.includes(c.id)).map(c => {
-                const items   = c.post_queue || []
+                const items = c.post_queue || []
                 const pending = items.filter(x => x.status === 'pending').length
                 return (
                   <div key={c.id}
@@ -601,7 +618,7 @@ function CampaignQueueModal({ open, bot, campaigns, onClose }) {
 
         {!serverUp && (
           <p className="text-xs text-yellow-500 bg-yellow-500/10 border border-yellow-500/20 rounded-lg px-3 py-2">
-            ⚠️ Bot server not running — queue will be saved but won't activate until server.js is started.
+            ⚠️ Bot server not reachable right now.
           </p>
         )}
 
@@ -616,32 +633,26 @@ function CampaignQueueModal({ open, bot, campaigns, onClose }) {
   )
 }
 
-// ─────────────────────────────────────────────────────────
-// Bot status config
-// ─────────────────────────────────────────────────────────
 const BOT_STATUS = {
-  idle:       { label: 'Ready',      dot: 'bg-ink-500',                  badge: 'bg-ink-700 text-ink-400'           },
-  running:    { label: 'Posting',    dot: 'bg-jade-400 animate-pulse',   badge: 'bg-jade-500/15 text-jade-400'      },
-  logging_in: { label: 'Logging in', dot: 'bg-yellow-400 animate-pulse', badge: 'bg-yellow-500/15 text-yellow-300'  },
-  paused:     { label: 'Paused',     dot: 'bg-yellow-400',               badge: 'bg-yellow-500/15 text-yellow-400'  },
-  error:      { label: 'Error',      dot: 'bg-flame-400',                badge: 'bg-flame-500/15 text-flame-400'    },
+  idle:       { label: 'Ready',      dot: 'bg-ink-500',                badge: 'bg-ink-700 text-ink-400' },
+  running:    { label: 'Posting',    dot: 'bg-jade-400 animate-pulse', badge: 'bg-jade-500/15 text-jade-400' },
+  logging_in: { label: 'Logging in', dot: 'bg-yellow-400 animate-pulse', badge: 'bg-yellow-500/15 text-yellow-300' },
+  paused:     { label: 'Paused',     dot: 'bg-yellow-400',             badge: 'bg-yellow-500/15 text-yellow-400' },
+  error:      { label: 'Error',      dot: 'bg-flame-400',              badge: 'bg-flame-500/15 text-flame-400' },
 }
 
-// ─────────────────────────────────────────────────────────
-// Bot Card
-// ─────────────────────────────────────────────────────────
 function BotCard({ bot, campaigns, serverOnline, onEdit, onDelete, onRefresh }) {
-  const [showPw,     setShowPw]     = useState(false)
-  const [logOpen,    setLogOpen]    = useState(false)
-  const [startOpen,  setStartOpen]  = useState(false)
-  const [queueOpen,  setQueueOpen]  = useState(false)
-  const [busy,       setBusy]       = useState(null)
+  const [showPw, setShowPw] = useState(false)
+  const [logOpen, setLogOpen] = useState(false)
+  const [startOpen, setStartOpen] = useState(false)
+  const [queueOpen, setQueueOpen] = useState(false)
+  const [busy, setBusy] = useState(null)
 
-  const sc       = BOT_STATUS[bot.status] || BOT_STATUS.idle
+  const sc = BOT_STATUS[bot.status] || BOT_STATUS.idle
   const isActive = bot.isRunning || bot.isLoggingIn
   const canLogin = serverOnline && !isActive
   const canStart = serverOnline && !isActive && bot.hasSession
-  const canStop  = serverOnline && isActive
+  const canStop = serverOnline && isActive
 
   const doLogin = async () => {
     setBusy('login')
@@ -735,27 +746,23 @@ function BotCard({ bot, campaigns, serverOnline, onEdit, onDelete, onRefresh }) 
             <button onClick={() => onDelete(bot.id)} className="btn-ghost py-1.5 text-xs px-3 hover:text-flame-400"><Trash2 size={12}/></button>
           </div>
         </div>
-        {!serverOnline && <div className="px-3 pb-3 text-center"><p className="text-xs text-ink-600">Start server.js to enable controls</p></div>}
+        {!serverOnline && <div className="px-3 pb-3 text-center"><p className="text-xs text-ink-600">Bot API not reachable right now</p></div>}
       </div>
 
-      <LogViewerModal      open={logOpen}   bot={bot} onClose={() => setLogOpen(false)}/>
-      <StartBotModal       open={startOpen} bot={bot} campaigns={campaigns} onClose={() => setStartOpen(false)} onConfirm={doStart}/>
-      <CampaignQueueModal  open={queueOpen} bot={bot} campaigns={campaigns} onClose={() => setQueueOpen(false)}/>
+      <LogViewerModal open={logOpen} bot={bot} onClose={() => setLogOpen(false)}/>
+      <StartBotModal open={startOpen} bot={bot} campaigns={campaigns} onClose={() => setStartOpen(false)} onConfirm={doStart}/>
+      <CampaignQueueModal open={queueOpen} bot={bot} campaigns={campaigns} onClose={() => setQueueOpen(false)}/>
     </>
   )
 }
 
-// ─────────────────────────────────────────────────────────
-// Bot Accounts Section
-// ─────────────────────────────────────────────────────────
 function BotAccountsSection({ campaigns }) {
-  const [bots,      setBots]      = useState([])
-  const [loading,   setLoading]   = useState(true)
-  const [online,    setOnline]    = useState(false)
+  const [bots, setBots] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [online, setOnline] = useState(false)
   const [formModal, setFormModal] = useState(null)
 
   const refresh = useCallback(async () => {
-    // Always load from Supabase first so bots show even when server is offline
     const { data: dbBots, error: dbErr } = await supabase
       .from('bot_accounts').select('*').order('created_at')
     if (dbErr) console.error('bot_accounts:', dbErr.message)
@@ -766,7 +773,6 @@ function BotAccountsSection({ campaigns }) {
     if (serverUp) {
       try {
         const serverBots = await fetchBots()
-        // Server returns bots with live status (isRunning, hasSession etc)
         if (Array.isArray(serverBots) && serverBots.length > 0) {
           setBots(serverBots)
           setLoading(false)
@@ -777,11 +783,10 @@ function BotAccountsSection({ campaigns }) {
       }
     }
 
-    // Fallback: use Supabase data directly (no live status)
     setBots((dbBots || []).map(b => ({
       ...b,
-      hasSession:  false,
-      isRunning:   false,
+      hasSession: false,
+      isRunning: false,
       isLoggingIn: false,
     })))
     setLoading(false)
@@ -829,11 +834,8 @@ function BotAccountsSection({ campaigns }) {
         <div className="px-5 py-3 border-b border-ink-700/40 bg-yellow-500/5 flex items-start gap-3">
           <WifiOff size={14} className="text-yellow-400 flex-shrink-0 mt-0.5"/>
           <div className="flex-1 min-w-0">
-            <p className="text-xs font-medium text-yellow-300">Bot server not running</p>
-            <div className="flex items-center gap-2 mt-1.5 bg-ink-900 border border-ink-700 rounded-lg px-3 py-1.5">
-              <code className="text-xs text-flame-400 font-mono flex-1 break-all">cd fb-listing-tool/bot &amp;&amp; npm install &amp;&amp; node server.js</code>
-              <button onClick={() => navigator.clipboard.writeText('cd fb-listing-tool/bot && npm install && node server.js')} className="text-ink-600 hover:text-ink-400 flex-shrink-0"><Copy size={10}/></button>
-            </div>
+            <p className="text-xs font-medium text-yellow-300">Bot API not reachable</p>
+            <p className="text-xs text-yellow-400/70 mt-1.5">The dashboard is using <code className="text-flame-300">{BOT_API}</code>.</p>
           </div>
         </div>
       )}
@@ -864,30 +866,21 @@ function BotAccountsSection({ campaigns }) {
   )
 }
 
-// ─────────────────────────────────────────────────────────
-// Server Banner
-// ─────────────────────────────────────────────────────────
 function ServerBanner({ online }) {
   if (online) return null
   return (
     <div className="flex items-start gap-3 bg-yellow-500/10 border border-yellow-500/25 rounded-xl p-4 mb-6">
       <WifiOff size={16} className="text-yellow-400 flex-shrink-0 mt-0.5"/>
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-semibold text-yellow-300">Bot server not running</p>
-        <p className="text-xs text-yellow-400/70 mt-1 mb-2">Run this command once in a terminal to enable bot controls:</p>
-        <div className="flex items-center gap-2 bg-ink-900 border border-ink-700 rounded-lg px-3 py-2">
-          <code className="text-xs text-flame-400 font-mono flex-1 break-all">cd fb-listing-tool/bot &amp;&amp; npm install &amp;&amp; node server.js</code>
-          <button onClick={() => navigator.clipboard.writeText('cd fb-listing-tool/bot && npm install && node server.js')} className="text-ink-600 hover:text-ink-400 flex-shrink-0 ml-2"><Copy size={11}/></button>
-        </div>
-        <p className="text-xs text-yellow-400/50 mt-2">Keep that terminal open while using bots.</p>
+        <p className="text-sm font-semibold text-yellow-300">Bot API not reachable</p>
+        <p className="text-xs text-yellow-400/70 mt-1 mb-2">
+          This dashboard expects the bot API at <code className="text-flame-300">{BOT_API}</code>.
+        </p>
       </div>
     </div>
   )
 }
 
-// ─────────────────────────────────────────────────────────
-// Main Dashboard
-// ─────────────────────────────────────────────────────────
 export default function DashboardPage() {
   const { campaigns, loading, refetch, updateStatus } = useCampaigns()
   const [serverOnline, setServerOnline] = useState(false)
@@ -926,9 +919,9 @@ export default function DashboardPage() {
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         {[
-          { label: 'Active Campaigns', val: active.length,    color: 'text-jade-400'   },
-          { label: 'Posts Sent',       val: totalPosted,      color: 'text-ink-100'    },
-          { label: 'Pending',          val: totalPending,     color: 'text-ink-100'    },
+          { label: 'Active Campaigns', val: active.length,    color: 'text-jade-400' },
+          { label: 'Posts Sent',       val: totalPosted,      color: 'text-ink-100' },
+          { label: 'Pending',          val: totalPending,     color: 'text-ink-100' },
           { label: 'Failed',           val: totalFailed,      color: totalFailed > 0 ? 'text-flame-400' : 'text-ink-100' },
         ].map(s => (
           <div key={s.label} className="card p-4">
