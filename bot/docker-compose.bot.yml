@@ -1,0 +1,17 @@
+services:
+  fb-bot-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fb-bot-server
+    restart: unless-stopped
+    env_file:
+      - .env
+    network_mode: "host"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.fb-bot.rule=Host(`bot.denner.in`)"
+      - "traefik.http.routers.fb-bot.entrypoints=websecure"
+      - "traefik.http.routers.fb-bot.tls=true"
+      - "traefik.http.routers.fb-bot.tls.certresolver=letsencrypt"
+      - "traefik.http.services.fb-bot.loadbalancer.server.port=3001"
