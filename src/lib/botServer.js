@@ -1,4 +1,4 @@
-const BASE = 'http://localhost:3001'
+const BASE = 'import.meta.env.VITE_BOT_SERVER_URL'
 
 export async function checkServer() {
   try {

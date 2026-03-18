@@ -17,6 +17,8 @@ const PORT  = 3001
 app.use(cors({ origin: '*' }))
 app.use(express.json())
 
+const BOT_API = import.meta.env.VITE_BOT_SERVER_URL
+
 // ── Supabase setup ────────────────────────────────────────
 const SUPA_URL = process.env.SUPABASE_URL
 const SUPA_KEY = process.env.SUPABASE_KEY
@@ -258,11 +260,14 @@ app.post('/bots/:id/queue', (req, res) => {
 // ── Helpers ───────────────────────────────────────────────
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 
+
+
+
 // ── Start ─────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log('\n🟢 FB Listing Bot Server started')
-  console.log(`   URL:      http://localhost:${PORT}`)
-  console.log(`   Health:   http://localhost:${PORT}/health`)
+  console.log(`   URL:      ${BOT_API}`)
+  console.log(`   Health:   ${BOT_API}/health`)
   console.log(`   Supabase: ${supabase ? '✅ connected' : '❌ NOT configured'}`)
   if (!supabase) {
     console.log('\n   ⚠️  Create bot/.env with:')
