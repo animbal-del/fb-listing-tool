@@ -364,7 +364,7 @@ async function main() {
   await warmPhotoCache(CAMPAIGN_ID)
 
   const context = await chromium.launchPersistentContext(userDataDir, {
-    headless: false,
+    headless: true,
     args: ['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-infobars'],
     userAgent:
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
