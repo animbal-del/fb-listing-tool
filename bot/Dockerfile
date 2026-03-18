@@ -1,13 +1,12 @@
-FROM node:20-slim
+FROM node:20-bookworm
 
 WORKDIR /app
 
 COPY package*.json ./
 RUN npm install
 
-COPY . .
+RUN npx playwright install --with-deps chromium
 
-ENV PORT=3001
-EXPOSE 3001
+COPY . .
 
 CMD ["node", "server.js"]
