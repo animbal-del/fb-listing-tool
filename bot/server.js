@@ -15,7 +15,7 @@ import 'dotenv/config'
 const __dir = dirname(fileURLToPath(import.meta.url))
 const app = express()
 const PORT = process.env.PORT || 3001
-const REMOTE_VIEWER_URL = process.env.REMOTE_VIEWER_URL || 'http://147.93.98.94:3001/browser/vnc.html?autoconnect=true&resize=remote&path=websockify'
+const REMOTE_VIEWER_URL = process.env.REMOTE_VIEWER_URL || 'http://147.93.98.94:3001/vnc.html?autoconnect=true&resize=remote&path=websockify'
 
 app.use(cors({ origin: '*' }))
 app.use(express.json())
