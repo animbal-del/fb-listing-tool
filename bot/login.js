@@ -17,6 +17,13 @@ async function main() {
   const botId = process.env.BOT_ACCOUNT_ID
   const sessionFile = process.env.SESSION_FILE || join(__dir, 'fb_session.json')
 
+  if (!botId) {
+    console.error('❌ BOT_ACCOUNT_ID missing')
+    process.exit(1)
+  }
+
+  process.env.DISPLAY = process.env.DISPLAY || ':99'
+
   const { data: bot } = await supabase.from('bot_accounts').select('*').eq('id', botId).single()
   if (!bot) {
     console.error('❌ Bot not found')
@@ -24,6 +31,7 @@ async function main() {
   }
 
   console.log(`\n🔐 Logging in ${bot.name} (${bot.fb_email})`)
+  console.log(`🖥️ Remote display: ${process.env.DISPLAY}`)
 
   const userDataDir = sessionFile.replace('.json', '_profile')
 
@@ -41,7 +49,7 @@ async function main() {
     timezoneId: 'Asia/Kolkata',
   })
 
-  const page = await context.newPage()
+  const page = context.pages()[0] || await context.newPage()
 
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
@@ -51,7 +59,7 @@ async function main() {
   })
 
   console.log('🔍 Checking existing session...')
-  await page.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 15000 })
+  await page.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 20000 })
   await sleep(2000)
   await page.bringToFront()
 
@@ -62,7 +70,7 @@ async function main() {
   if (!alreadyLoggedIn) {
     await page.goto('https://www.facebook.com/login/', {
       waitUntil: 'domcontentloaded',
-      timeout: 15000,
+      timeout: 20000,
     })
     await sleep(2000)
     await page.bringToFront()
@@ -122,9 +130,9 @@ async function main() {
     }
 
     if (!filled) {
-      console.log('\n👀 Please log in manually in the browser window. You have 2 minutes.\n')
+      console.log('\n👀 Please log in manually in the remote browser window. You have 2 minutes.\n')
     } else {
-      console.log('\n👀 Complete any 2FA or CAPTCHA in the browser window.\n')
+      console.log('\n👀 Complete any 2FA or CAPTCHA in the remote browser window.\n')
     }
 
     let loggedIn = false
@@ -136,7 +144,7 @@ async function main() {
         break
       }
       if (i === 5) console.log('⏳ Waiting for login...')
-      if (i === 15) console.log('⏳ Still waiting... complete 2FA in the browser if needed')
+      if (i === 15) console.log('⏳ Still waiting... complete 2FA in the remote browser if needed')
       if (i === 25) console.log('⏳ Last chance... 45 seconds remaining')
     }
 
@@ -306,14 +314,14 @@ async function runUiTraining(page, botId) {
         stepEl.textContent = current
           ? `Step ${state.idx + 1} of ${steps.length}: ${current.label}`
           : 'All steps captured. Click Save Training.'
-      
+
         progressEl.innerHTML = steps
           .map((s, i) => {
             const status = state.captured[s.key] ? '✅' : i === state.idx ? '👉' : '•'
             return `<span style="display:inline-block;margin-right:10px;">${status} ${s.key}</span>`
           })
           .join('')
-      
+
         saveBtn.disabled = !steps.every((s) => state.captured[s.key])
       }
 
@@ -323,7 +331,6 @@ async function runUiTraining(page, botId) {
         document.removeEventListener('click', clickHandler, true)
         if (root?.remove) root.remove()
         if (style?.remove) style.remove()
-        
       }
 
       const clickHandler = (event) => {
@@ -336,7 +343,6 @@ async function runUiTraining(page, botId) {
         const target = event.target instanceof Element ? event.target : null
         const el = target ? target.closest('*') : null
         if (!el) return
-
 
         clearHighlights()
         el.classList.add('__fb-bot-training-highlight')
@@ -447,5 +453,3 @@ main().catch((err) => {
   console.error('❌ Fatal:', err.message)
   process.exit(1)
 })
-
-
