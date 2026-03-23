@@ -189,6 +189,7 @@ function PostActivityLog({ items }) {
                 <th className="text-left px-4 py-2 text-ink-500 font-medium">Status</th>
                 <th className="text-left px-4 py-2 text-ink-500 font-medium">Property</th>
                 <th className="text-left px-4 py-2 text-ink-500 font-medium">Group</th>
+                <th className="text-left px-4 py-2 text-ink-500 font-medium">Bot</th>
                 <th className="text-left px-4 py-2 text-ink-500 font-medium">Time</th>
                 <th className="text-left px-4 py-2 text-ink-500 font-medium">Note</th>
               </tr>
@@ -232,6 +233,11 @@ function PostActivityLog({ items }) {
                   <td className="px-4 py-2.5 text-ink-400 max-w-[180px]">
                     <p className="truncate">{item.groups?.name || '—'}</p>
                   </td>
+                  <td className="px-4 py-2.5 text-ink-400 max-w-[150px]">
+                    <p className="truncate">
+                      {item.assigned_bot_name || (item.assigned_bot_id ? `${item.assigned_bot_id.slice(0, 8)}…` : '—')}
+                    </p>
+                  </td>
                   <td className="px-4 py-2.5 text-ink-500 whitespace-nowrap">
                     {item.posted_at ? (
                       new Date(item.posted_at).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })
@@ -273,10 +279,10 @@ function CampaignRow({ campaign, onToggle }) {
     const rows = items
       .map(
         q =>
-          `"${q.properties?.title || ''}","${q.groups?.name || ''}","${q.status}","${q.scheduled_at || ''}","${q.posted_at || ''}","${q.error_log || ''}"`
+          `"${q.properties?.title || ''}","${q.groups?.name || ''}","${q.assigned_bot_name || q.assigned_bot_id || ''}","${q.status}","${q.scheduled_at || ''}","${q.posted_at || ''}","${q.error_log || ''}"`
       )
       .join('\n')
-    const blob = new Blob(['property,group,status,scheduled_at,posted_at,error\n' + rows], { type: 'text/csv' })
+    const blob = new Blob(['property,group,bot,status,scheduled_at,posted_at,error\n' + rows], { type: 'text/csv' })
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob)
     a.download = `campaign-${campaign.id.slice(0, 8)}.csv`

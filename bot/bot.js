@@ -1,5 +1,10 @@
 // bot.js — FB Group Posting Bot
-// All settings read from bot_accounts table in Supabase
+// Bot timing = execution behavior
+// Campaign timing = campaign-level constraint
+// Effective runtime uses Option C:
+//   daily cap   = min(bot max/day, campaign posts/day)
+//   start hour  = max(bot start, campaign start)
+//   end hour    = min(bot end, campaign end)
 
 import { chromium } from 'playwright'
 import { createClient } from '@supabase/supabase-js'
@@ -15,6 +20,27 @@ const BOT_ACCOUNT_ID = process.env.BOT_ACCOUNT_ID || null
 const CAMPAIGN_ID = process.env.CAMPAIGN_ID
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY)
+
+let STOP_REQUESTED = false
+let CURRENT_CONTEXT = null
+let CURRENT_PAGE = null
+let _cdTimer = null
+
+process.on('SIGTERM', async () => {
+  STOP_REQUESTED = true
+  console.log('🛑 Stop signal received')
+  stopCountdown()
+  await safeCleanupRuntime()
+  process.exit(0)
+})
+
+process.on('SIGINT', async () => {
+  STOP_REQUESTED = true
+  console.log('🛑 Interrupt signal received')
+  stopCountdown()
+  await safeCleanupRuntime()
+  process.exit(0)
+})
 
 // ── Safe DB helpers ───────────────────────────────────────
 async function dbUpdate(table, id, data) {
@@ -50,25 +76,52 @@ async function loadUiProfile(botId) {
 }
 
 // ── Countdown logger ──────────────────────────────────────
-let _cdTimer = null
 function startCountdown(ms, label) {
-  clearInterval(_cdTimer)
+  stopCountdown()
   const end = Date.now() + ms
+
   const tick = () => {
-    const rem = end - Date.now()
-    if (rem <= 0) {
-      clearInterval(_cdTimer)
+    if (STOP_REQUESTED) {
+      stopCountdown()
       return
     }
+
+    const rem = end - Date.now()
+    if (rem <= 0) {
+      stopCountdown()
+      return
+    }
+
     const m = Math.floor(rem / 60000)
     const s = Math.floor((rem % 60000) / 1000)
     console.log(`⏳ ${label} — ${m}m ${s}s remaining`)
   }
+
   tick()
   _cdTimer = setInterval(tick, 30000)
 }
+
 function stopCountdown() {
   clearInterval(_cdTimer)
+  _cdTimer = null
+}
+
+async function interruptibleSleep(ms, countdownLabel = null) {
+  if (countdownLabel) startCountdown(ms, countdownLabel)
+
+  const step = 1000
+  let elapsed = 0
+
+  try {
+    while (elapsed < ms) {
+      if (STOP_REQUESTED) throw new Error('BOT_STOPPED')
+      const slice = Math.min(step, ms - elapsed)
+      await new Promise(r => setTimeout(r, slice))
+      elapsed += slice
+    }
+  } finally {
+    if (countdownLabel) stopCountdown()
+  }
 }
 
 // ── Photo cache — download once, reuse, delete on finish ─
@@ -81,13 +134,16 @@ async function warmPhotoCache(campaignId) {
       .select('properties(id, photos)')
       .eq('campaign_id', campaignId)
       .eq('status', 'pending')
+
     if (!data?.length) return
 
     const seen = new Set()
     const toDownload = []
+
     for (const row of data) {
       const p = row.properties
       if (!p) continue
+
       if (!seen.has(p.id)) {
         console.log(
           `   📋 Property ${p.id?.slice(0, 8)}: photos=${JSON.stringify(
@@ -95,10 +151,12 @@ async function warmPhotoCache(campaignId) {
           )} (${p.photos?.length || 0} total)`
         )
       }
+
       if (!p || seen.has(p.id) || !p.photos?.length) continue
       seen.add(p.id)
       toDownload.push(p)
     }
+
     if (!toDownload.length) {
       console.log('   ℹ️ No photos found for any property in this campaign')
       return
@@ -108,11 +166,15 @@ async function warmPhotoCache(campaignId) {
     console.log(`\n📥 Pre-downloading photos for ${toDownload.length} propert(y/ies)...`)
 
     for (const prop of toDownload) {
+      if (STOP_REQUESTED) throw new Error('BOT_STOPPED')
+
       for (let i = 0; i < Math.min(prop.photos.length, 4); i++) {
         const url = prop.photos[i]
         if (!url) continue
+
         const localPath = getPhotoPath(prop.id, i, url)
         if (existsSync(localPath)) continue
+
         try {
           const res = await fetch(url)
           if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -123,8 +185,10 @@ async function warmPhotoCache(campaignId) {
         }
       }
     }
+
     console.log('📦 Photo cache ready\n')
   } catch (e) {
+    if (e.message === 'BOT_STOPPED') return
     console.log(`⚠️ Photo cache warm failed: ${e.message}`)
   }
 }
@@ -287,6 +351,7 @@ function buildProfileLocators(page, profile) {
 
 async function tryClickProfile(page, profile, label, options = {}) {
   const { waitMs = 2000, allowDisabled = false } = options
+
   for (const locator of buildProfileLocators(page, profile)) {
     try {
       if (!(await locator.isVisible({ timeout: waitMs }))) continue
@@ -299,6 +364,7 @@ async function tryClickProfile(page, profile, label, options = {}) {
       return true
     } catch {}
   }
+
   return false
 }
 
@@ -309,6 +375,118 @@ async function findProfileLocator(page, profile, waitMs = 2000) {
     } catch {}
   }
   return null
+}
+
+// ── Runtime lifecycle helpers ─────────────────────────────
+function isClosedTargetError(err) {
+  const msg = String(err?.message || err || '')
+  return (
+    msg.includes('Target page, context or browser has been closed') ||
+    msg.includes('browser has been closed') ||
+    msg.includes('context or browser has been closed') ||
+    msg.includes('page.goto: Target page, context or browser has been closed')
+  )
+}
+
+async function safeCleanupRuntime() {
+  stopCountdown()
+
+  try { await CURRENT_PAGE?.close?.() } catch {}
+  try { await CURRENT_CONTEXT?.close?.() } catch {}
+
+  CURRENT_PAGE = null
+  CURRENT_CONTEXT = null
+}
+
+async function createFreshRuntime() {
+  if (STOP_REQUESTED) throw new Error('BOT_STOPPED')
+
+  const userDataDir = SESSION_FILE.replace('.json', '_profile')
+  if (!existsSync(userDataDir)) {
+    throw new Error(`No browser profile: ${userDataDir}`)
+  }
+
+  await safeCleanupRuntime()
+
+  const context = await chromium.launchPersistentContext(userDataDir, {
+    headless: true,
+    args: [
+      '--disable-blink-features=AutomationControlled',
+      '--no-sandbox',
+      '--disable-infobars',
+    ],
+    userAgent:
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    viewport: { width: 1280, height: 900 },
+    locale: 'en-US',
+    timezoneId: 'Asia/Kolkata',
+  })
+
+  const page = await context.newPage()
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
+    window.chrome = { runtime: {}, loadTimes: () => {}, csi: () => {}, app: {} }
+  })
+
+  CURRENT_CONTEXT = context
+  CURRENT_PAGE = page
+
+  return { context, page }
+}
+
+async function ensureLivePage() {
+  if (STOP_REQUESTED) throw new Error('BOT_STOPPED')
+
+  if (!CURRENT_CONTEXT || !CURRENT_PAGE || CURRENT_PAGE.isClosed()) {
+    console.log('   ♻️ Rebuilding browser session...')
+    await createFreshRuntime()
+  }
+
+  return CURRENT_PAGE
+}
+
+async function recoverRuntimeAfterBrowserDeath() {
+  console.log('   ♻️ Browser/page was closed. Rebuilding session...')
+  await createFreshRuntime()
+
+  const page = CURRENT_PAGE
+  await page.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 30000 })
+  await page.bringToFront()
+  await interruptibleSleep(2000)
+
+  if (page.url().includes('login')) {
+    throw new Error('Session is no longer logged in')
+  }
+
+  console.log('   ✅ Browser session rebuilt')
+  return page
+}
+
+function computeEffectiveRuntime(botCfg, campaignCfg) {
+  const botMax = Number(botCfg.max_posts_per_day ?? 18)
+  const botStart = Number(botCfg.post_start_hour ?? 9)
+  const botEnd = Number(botCfg.post_end_hour ?? 20)
+
+  const campaignMax = Number(campaignCfg?.posts_per_day_limit ?? botMax)
+  const campaignStart = Number(campaignCfg?.posting_start_hour ?? botStart)
+  const campaignEnd = Number(campaignCfg?.posting_end_hour ?? botEnd)
+
+  const effectiveMaxPostsPerDay = Math.min(botMax, campaignMax)
+  const effectiveStartHour = Math.max(botStart, campaignStart)
+  const effectiveEndHour = Math.min(botEnd, campaignEnd)
+
+  return {
+    effectiveMaxPostsPerDay,
+    effectiveStartHour,
+    effectiveEndHour,
+    botMax,
+    botStart,
+    botEnd,
+    campaignMax,
+    campaignStart,
+    campaignEnd,
+    hasValidWindow: effectiveStartHour < effectiveEndHour,
+  }
 }
 
 // ── Main ──────────────────────────────────────────────────
@@ -330,6 +508,12 @@ async function main() {
     session_break_max: 180,
   }
 
+  let campaignCfg = {
+    posts_per_day_limit: 18,
+    posting_start_hour: 9,
+    posting_end_hour: 20,
+  }
+
   let uiProfile = null
 
   if (BOT_ACCOUNT_ID) {
@@ -342,17 +526,35 @@ async function main() {
     })
   }
 
-  const getDelay =
-    () =>
-      cfg.min_delay_seconds * 1000 +
-      Math.random() * ((cfg.max_delay_seconds - cfg.min_delay_seconds) * 1000)
+  const campaignRow = await dbGet('campaigns', CAMPAIGN_ID)
+  if (campaignRow) {
+    campaignCfg = { ...campaignCfg, ...campaignRow }
+  }
+
+  let runtime = computeEffectiveRuntime(cfg, campaignCfg)
+
+  if (!runtime.hasValidWindow) {
+    console.error('❌ No overlapping posting window between bot and campaign')
+    console.error(`   Bot window: ${runtime.botStart}:00 – ${runtime.botEnd}:00`)
+    console.error(`   Campaign window: ${runtime.campaignStart}:00 – ${runtime.campaignEnd}:00`)
+    if (BOT_ACCOUNT_ID) await dbUpdate('bot_accounts', BOT_ACCOUNT_ID, { status: 'error' })
+    process.exit(1)
+  }
+
+  const getDelay = () =>
+    cfg.min_delay_seconds * 1000 +
+    Math.random() * ((cfg.max_delay_seconds - cfg.min_delay_seconds) * 1000)
 
   console.log(`\n🏠 FB Listing Bot — ${cfg.name}`)
   console.log(`   Campaign:  ${CAMPAIGN_ID}`)
-  console.log(`   Max/day:   ${cfg.max_posts_per_day}`)
-  console.log(`   Window:    ${cfg.post_start_hour}:00 – ${cfg.post_end_hour}:00`)
-  console.log(`   Delay:     ${cfg.min_delay_seconds}s – ${cfg.max_delay_seconds}s`)
-  console.log(`   UI profile: ${uiProfile ? 'trained selectors loaded' : 'using fallback selectors'}\n`)
+  console.log(`   Effective Max/day: ${runtime.effectiveMaxPostsPerDay}`)
+  console.log(`   Effective Window:  ${runtime.effectiveStartHour}:00 – ${runtime.effectiveEndHour}:00`)
+  console.log(`   Bot Max/day:       ${runtime.botMax}`)
+  console.log(`   Bot Window:        ${runtime.botStart}:00 – ${runtime.botEnd}:00`)
+  console.log(`   Campaign Max/day:  ${runtime.campaignMax}`)
+  console.log(`   Campaign Window:   ${runtime.campaignStart}:00 – ${runtime.campaignEnd}:00`)
+  console.log(`   Delay:             ${cfg.min_delay_seconds}s – ${cfg.max_delay_seconds}s`)
+  console.log(`   UI profile:        ${uiProfile ? 'trained selectors loaded' : 'using fallback selectors'}\n`)
 
   const userDataDir = SESSION_FILE.replace('.json', '_profile')
   if (!existsSync(userDataDir)) {
@@ -362,31 +564,18 @@ async function main() {
   }
 
   await warmPhotoCache(CAMPAIGN_ID)
+  await createFreshRuntime()
 
-  const context = await chromium.launchPersistentContext(userDataDir, {
-    headless: true,
-    args: ['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-infobars'],
-    userAgent:
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    viewport: { width: 1280, height: 900 },
-    locale: 'en-US',
-    timezoneId: 'Asia/Kolkata',
-  })
-
-  const page = await context.newPage()
-  await page.addInitScript(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
-    window.chrome = { runtime: {}, loadTimes: () => {}, csi: () => {}, app: {} }
-  })
+  let page = CURRENT_PAGE
 
   console.log('🔍 Verifying session...')
   await page.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 30000 })
   await page.bringToFront()
-  await sleep(3000)
+  await interruptibleSleep(3000)
 
   if (page.url().includes('login')) {
     console.error('❌ Not logged in — use "Login to Facebook" in the dashboard.')
-    await context.close()
+    await safeCleanupRuntime()
     cleanPhotoCache()
     if (BOT_ACCOUNT_ID) await dbUpdate('bot_accounts', BOT_ACCOUNT_ID, { status: 'error' })
     process.exit(1)
@@ -398,13 +587,27 @@ async function main() {
   let sessionCount = 0
   let isFirstPost = true
   let loopCount = 0
+  let browserDeathCount = 0
 
   while (true) {
+    if (STOP_REQUESTED) throw new Error('BOT_STOPPED')
+
     loopCount++
 
     if (BOT_ACCOUNT_ID && loopCount % 5 === 0) {
-      const fresh = await dbGet('bot_accounts', BOT_ACCOUNT_ID)
-      if (fresh) cfg = { ...cfg, ...fresh }
+      const freshBot = await dbGet('bot_accounts', BOT_ACCOUNT_ID)
+      if (freshBot) cfg = { ...cfg, ...freshBot }
+
+      const freshCampaign = await dbGet('campaigns', CAMPAIGN_ID)
+      if (freshCampaign) campaignCfg = { ...campaignCfg, ...freshCampaign }
+
+      runtime = computeEffectiveRuntime(cfg, campaignCfg)
+
+      if (!runtime.hasValidWindow) {
+        console.log('❌ Bot and campaign windows no longer overlap')
+        if (BOT_ACCOUNT_ID) await dbUpdate('bot_accounts', BOT_ACCOUNT_ID, { status: 'error' })
+        break
+      }
     }
 
     const now = new Date()
@@ -415,26 +618,22 @@ async function main() {
     }
 
     const hour = now.getHours()
-    if (hour < cfg.post_start_hour || hour >= cfg.post_end_hour) {
+    if (hour < runtime.effectiveStartHour || hour >= runtime.effectiveEndHour) {
       const next = new Date()
-      if (hour >= cfg.post_end_hour) next.setDate(next.getDate() + 1)
-      next.setHours(cfg.post_start_hour, 0, 0, 0)
+      if (hour >= runtime.effectiveEndHour) next.setDate(next.getDate() + 1)
+      next.setHours(runtime.effectiveStartHour, 0, 0, 0)
       const waitMs = next - Date.now()
-      console.log(`⏰ Outside window (${cfg.post_start_hour}:00–${cfg.post_end_hour}:00)`)
-      startCountdown(waitMs, 'Waiting for posting window')
-      await sleep(waitMs)
-      stopCountdown()
+      console.log(`⏰ Outside effective window (${runtime.effectiveStartHour}:00–${runtime.effectiveEndHour}:00)`)
+      await interruptibleSleep(waitMs, 'Waiting for posting window')
       continue
     }
 
-    if (todayCount >= cfg.max_posts_per_day) {
+    if (todayCount >= runtime.effectiveMaxPostsPerDay) {
       const next = new Date()
       next.setDate(next.getDate() + 1)
-      next.setHours(cfg.post_start_hour, 0, 0, 0)
-      console.log(`📊 Daily cap reached (${cfg.max_posts_per_day}/day)`)
-      startCountdown(next - Date.now(), 'Waiting for next day')
-      await sleep(next - Date.now())
-      stopCountdown()
+      next.setHours(runtime.effectiveStartHour, 0, 0, 0)
+      console.log(`📊 Effective daily cap reached (${runtime.effectiveMaxPostsPerDay}/day)`)
+      await interruptibleSleep(next - Date.now(), 'Waiting for next day')
       continue
     }
 
@@ -444,9 +643,7 @@ async function main() {
           Math.random() * (cfg.session_break_max - cfg.session_break_min)) *
         60000
       console.log(`☕ Session break (${cfg.session_cap} posts done)`)
-      startCountdown(breakMs, 'Session break')
-      await sleep(breakMs)
-      stopCountdown()
+      await interruptibleSleep(breakMs, 'Session break')
       sessionCount = 0
       continue
     }
@@ -466,15 +663,58 @@ async function main() {
       break
     }
 
-    console.log(`\n📤 [${todayCount + 1}/${cfg.max_posts_per_day}] → ${item.groups.name}`)
+    console.log(`\n📤 [${todayCount + 1}/${runtime.effectiveMaxPostsPerDay}] → ${item.groups.name}`)
     console.log(`   Listing: ${item.properties.title}`)
+
+    page = await ensureLivePage()
 
     const success = await postToGroup(page, item, uiProfile)
 
-    if (success) {
+    if (success === 'REBUILD_AND_RETRY') {
+      browserDeathCount++
+
+      if (browserDeathCount >= 3) {
+        console.log('   ❌ Browser session lost repeatedly. Bot stopped for safety.')
+        await markItem(item.id, 'failed', 'Browser session lost repeatedly')
+        if (BOT_ACCOUNT_ID) await dbUpdate('bot_accounts', BOT_ACCOUNT_ID, { status: 'error' })
+        break
+      }
+
+      try {
+        page = await recoverRuntimeAfterBrowserDeath()
+        const retrySuccess = await postToGroup(page, item, uiProfile, true)
+
+        if (retrySuccess === true) {
+          browserDeathCount = 0
+          await markItem(item.id, 'posted')
+          todayCount++
+          sessionCount++
+
+          if (BOT_ACCOUNT_ID) {
+            const botRow = await dbGet('bot_accounts', BOT_ACCOUNT_ID)
+            await dbUpdate('bot_accounts', BOT_ACCOUNT_ID, {
+              posts_today: todayCount,
+              total_posts: (botRow?.total_posts || 0) + 1,
+              last_active: new Date().toISOString(),
+              posts_today_date: now.toISOString().split('T')[0],
+            })
+          }
+
+          console.log(`   ✅ Posted after recovery! (${todayCount}/${runtime.effectiveMaxPostsPerDay} today)`)
+        } else {
+          await markItem(item.id, 'failed', 'Bot could not complete post after browser recovery')
+          console.log('   ❌ Failed after recovery — moving to next')
+        }
+      } catch (e) {
+        await markItem(item.id, 'failed', `Browser recovery failed: ${e.message}`)
+        console.log(`   ❌ Browser recovery failed: ${e.message}`)
+      }
+    } else if (success) {
+      browserDeathCount = 0
       await markItem(item.id, 'posted')
       todayCount++
       sessionCount++
+
       if (BOT_ACCOUNT_ID) {
         const botRow = await dbGet('bot_accounts', BOT_ACCOUNT_ID)
         await dbUpdate('bot_accounts', BOT_ACCOUNT_ID, {
@@ -484,11 +724,14 @@ async function main() {
           posts_today_date: now.toISOString().split('T')[0],
         })
       }
-      console.log(`   ✅ Posted! (${todayCount}/${cfg.max_posts_per_day} today)`)
+
+      console.log(`   ✅ Posted! (${todayCount}/${runtime.effectiveMaxPostsPerDay} today)`)
     } else {
       await markItem(item.id, 'failed', 'Bot could not complete post')
       console.log('   ❌ Failed — moving to next')
     }
+
+    if (STOP_REQUESTED) throw new Error('BOT_STOPPED')
 
     if (isFirstPost) {
       isFirstPost = false
@@ -497,59 +740,71 @@ async function main() {
       console.log(`   ⚡ First post done — next post in ${minM}–${maxM} min`)
     } else {
       const delayMs = getDelay()
-      startCountdown(delayMs, 'Waiting before next post')
-      await sleep(delayMs)
-      stopCountdown()
+      await interruptibleSleep(delayMs, 'Waiting before next post')
     }
   }
 
-  await context.close()
+  await safeCleanupRuntime()
   cleanPhotoCache()
   if (BOT_ACCOUNT_ID) await dbUpdate('bot_accounts', BOT_ACCOUNT_ID, { status: 'idle' })
   console.log('\n✅ Bot finished.')
 }
 
 // ── Post to one group ─────────────────────────────────────
-async function postToGroup(page, item, uiProfile) {
+async function postToGroup(page, item, uiProfile, isRetry = false) {
   const text = buildText(item)
   const propId = item.properties?.id
   const photos = item.properties?.photos || []
 
   try {
-    console.log('   🌐 Opening group...')
+    if (STOP_REQUESTED) throw new Error('BOT_STOPPED')
+
+    page = await ensureLivePage()
+
+    console.log(`   🌐 Opening group${isRetry ? ' (retry)' : ''}...`)
     await page.goto(item.groups.fb_url, { waitUntil: 'domcontentloaded', timeout: 30000 })
     await page.bringToFront()
-    await sleep(randomBetween(3000, 5000))
+    await interruptibleSleep(randomBetween(3000, 5000))
+
     try {
       await page.keyboard.press('Escape')
-      await sleep(500)
+      await interruptibleSleep(500)
     } catch {}
+
+    if (STOP_REQUESTED) throw new Error('BOT_STOPPED')
 
     console.log('   🖊️ Opening composer...')
     if (!(await openComposer(page, uiProfile))) {
       await page.screenshot({ path: join(__dir, `debug_${Date.now()}.png`) })
       return false
     }
-    await sleep(randomBetween(1500, 2500))
+
+    await interruptibleSleep(randomBetween(1500, 2500))
+
+    if (STOP_REQUESTED) throw new Error('BOT_STOPPED')
 
     console.log('   ✍️ Typing text...')
     if (!(await typeText(page, text, uiProfile))) {
       console.log('   ⚠️ Could not type text')
       return false
     }
-    await sleep(randomBetween(800, 1200))
+
+    await interruptibleSleep(randomBetween(800, 1200))
 
     if (photos.length > 0 && propId) {
       const cachedPaths = getCachedPhotos(propId, photos)
       console.log(`   🖼️ Cached photos for ${propId?.slice(0, 8)}: ${cachedPaths.length} file(s)`)
+
       if (cachedPaths.length > 0) {
         await attachPhotos(page, cachedPaths, uiProfile)
-        await sleep(randomBetween(2000, 3000))
+        await interruptibleSleep(randomBetween(2000, 3000))
       } else {
         console.log('   ⚠️ No cached photos found — posting text only')
         console.log(`   📁 Looking in: ${PHOTO_DIR}`)
       }
     }
+
+    if (STOP_REQUESTED) throw new Error('BOT_STOPPED')
 
     console.log('   🖱️ Clicking Post...')
     if (!(await clickPost(page, uiProfile))) {
@@ -557,17 +812,25 @@ async function postToGroup(page, item, uiProfile) {
       return false
     }
 
-    await sleep(randomBetween(3000, 5000))
+    await interruptibleSleep(randomBetween(3000, 5000))
     await page.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 15000 })
-    await sleep(1500)
+    await interruptibleSleep(1500)
+
     return true
   } catch (err) {
-    console.log(`   ⚠️ Error: ${err.message.split('\n')[0]}`)
+    if (err.message === 'BOT_STOPPED') throw err
+    if (isClosedTargetError(err)) {
+      console.log(`   ⚠️ Error: ${String(err.message).split('\n')[0]}`)
+      return 'REBUILD_AND_RETRY'
+    }
+    console.log(`   ⚠️ Error: ${String(err.message).split('\n')[0]}`)
     return false
   }
 }
 
 async function openComposer(page, uiProfile) {
+  if (STOP_REQUESTED) throw new Error('BOT_STOPPED')
+
   if (uiProfile?.composer_selector) {
     if (await tryClickProfile(page, uiProfile.composer_selector, 'composer', { waitMs: 2500, allowDisabled: true })) {
       return true
@@ -613,6 +876,8 @@ async function openComposer(page, uiProfile) {
 
 async function attachPhotos(page, localPaths, uiProfile) {
   if (!localPaths?.length) return
+  if (STOP_REQUESTED) throw new Error('BOT_STOPPED')
+
   console.log(`   📎 Attaching: ${localPaths.map((p) => p.split('/').pop()).join(', ')}`)
 
   let photoButtonEl = null
@@ -674,31 +939,33 @@ async function attachPhotos(page, localPaths, uiProfile) {
       photoButtonEl.click(),
     ])
     await fileChooser.setFiles(localPaths)
-    await sleep(randomBetween(3000, 5000))
+    await interruptibleSleep(randomBetween(3000, 5000))
     console.log(`   ✅ ${localPaths.length} photo(s) attached via file chooser`)
     return
   } catch (e) {
-    console.log(`   ⚠️ File chooser strategy failed: ${e.message.split('\n')[0]}`)
+    console.log(`   ⚠️ File chooser strategy failed: ${String(e.message).split('\n')[0]}`)
   }
 
   try {
     await photoButtonEl.click()
-    await sleep(1500)
+    await interruptibleSleep(1500)
     const inp = page.locator('input[type="file"]').first()
     if ((await inp.count()) > 0) {
       await inp.setInputFiles(localPaths, { timeout: 5000 })
-      await sleep(randomBetween(3000, 5000))
+      await interruptibleSleep(randomBetween(3000, 5000))
       console.log(`   ✅ ${localPaths.length} photo(s) attached via hidden input`)
       return
     }
   } catch (e) {
-    console.log(`   ⚠️ Hidden input strategy failed: ${e.message.split('\n')[0]}`)
+    console.log(`   ⚠️ Hidden input strategy failed: ${String(e.message).split('\n')[0]}`)
   }
 
   console.log('   ⚠️ Could not attach photos — posting text only')
 }
 
 async function typeText(page, text, uiProfile) {
+  if (STOP_REQUESTED) throw new Error('BOT_STOPPED')
+
   if (uiProfile?.textbox_selector) {
     const locator = await findProfileLocator(page, uiProfile.textbox_selector, 2500)
     if (locator) {
@@ -707,7 +974,7 @@ async function typeText(page, text, uiProfile) {
           throw new Error('Matched comment box')
         }
         await locator.click()
-        await sleep(400)
+        await interruptibleSleep(400)
         await page.keyboard.type(text, { delay: randomBetween(25, 65) })
         if (((await locator.textContent()) || '').length > 5) {
           console.log('   🎯 Used trained selector for textbox')
@@ -723,7 +990,7 @@ async function typeText(page, text, uiProfile) {
       await el.waitFor({ state: 'visible', timeout: 6000 })
       if (((await el.getAttribute('aria-label')) || '').toLowerCase().includes('comment')) continue
       await el.click()
-      await sleep(400)
+      await interruptibleSleep(400)
       await page.keyboard.type(text, { delay: randomBetween(25, 65) })
       if (((await el.textContent()) || '').length > 5) return true
     } catch {}
@@ -748,6 +1015,8 @@ async function typeText(page, text, uiProfile) {
 }
 
 async function clickPost(page, uiProfile) {
+  if (STOP_REQUESTED) throw new Error('BOT_STOPPED')
+
   if (uiProfile?.post_selector) {
     if (await tryClickProfile(page, uiProfile.post_selector, 'post button', { waitMs: 2500, allowDisabled: false })) {
       return true
@@ -791,15 +1060,20 @@ function buildText(item) {
   return t
 }
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms))
-}
 function randomBetween(min, max) {
   return Math.floor(min + Math.random() * (max - min))
 }
 
 main().catch(async (err) => {
+  if (err.message === 'BOT_STOPPED') {
+    console.log('🛑 Bot stopped cleanly')
+    cleanPhotoCache()
+    if (BOT_ACCOUNT_ID) await dbUpdate('bot_accounts', BOT_ACCOUNT_ID, { status: 'idle' })
+    process.exit(0)
+  }
+
   console.error('❌ Bot crashed:', err.message)
+  await safeCleanupRuntime()
   cleanPhotoCache()
   if (BOT_ACCOUNT_ID) await dbUpdate('bot_accounts', BOT_ACCOUNT_ID, { status: 'error' })
   process.exit(1)
