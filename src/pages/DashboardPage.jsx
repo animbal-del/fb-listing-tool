@@ -268,8 +268,9 @@ function PostActivityLog({ items }) {
   )
 }
 
-function CampaignRow({ campaign, onToggle }) {
+function CampaignRow({ campaign, onToggle, onRetryFailed }) {
   const [expanded, setExpanded] = useState(false)
+  const [retrying, setRetrying] = useState(false)
   const items = campaign.post_queue || []
   const posted = items.filter(i => i.status === 'posted').length
   const failed = items.filter(i => i.status === 'failed').length
@@ -289,6 +290,20 @@ function CampaignRow({ campaign, onToggle }) {
     a.click()
   }
 
+  const handleRetryFailed = async () => {
+    if (failed === 0) return
+    if (!confirm(`Retry ${failed} failed post${failed > 1 ? 's' : ''} for this campaign?`)) return
+
+    setRetrying(true)
+    try {
+      await onRetryFailed(campaign.id)
+    } catch (err) {
+      alert(err.message || 'Could not retry failed posts')
+    } finally {
+      setRetrying(false)
+    }
+  }
+
   return (
     <div className="card overflow-hidden">
       <div className="p-5">
@@ -304,7 +319,7 @@ function CampaignRow({ campaign, onToggle }) {
             <p className="text-sm font-medium text-ink-100">{campaign.notes || 'Untitled Campaign'}</p>
             {failed > 0 && (
               <p className="text-xs text-flame-400 mt-1 flex items-center gap-1">
-                <XCircle size={11} /> {failed} post{failed > 1 ? 's' : ''} failed — see log below
+                <XCircle size={11} /> {failed} post{failed > 1 ? 's' : ''} failed — retry available
               </p>
             )}
           </div>
@@ -317,6 +332,15 @@ function CampaignRow({ campaign, onToggle }) {
             {campaign.status === 'paused' && (
               <button onClick={() => onToggle(campaign.id, 'active')} className="btn-ghost py-1.5 text-xs">
                 <Play size={13} /> Resume
+              </button>
+            )}
+            {failed > 0 && (
+              <button
+                onClick={handleRetryFailed}
+                disabled={retrying}
+                className="btn-ghost py-1.5 text-xs"
+              >
+                <RefreshCw size={13} /> {retrying ? 'Retrying…' : `Retry Failed (${failed})`}
               </button>
             )}
             <button onClick={exportCSV} className="btn-ghost py-1.5 text-xs">
@@ -642,7 +666,7 @@ function LogViewerModal({ open, bot, onClose }) {
     if (line.includes('❌') || line.includes('failed')) return 'text-flame-400'
     if (line.includes('⚠️') || line.includes('Could')) return 'text-yellow-400'
     if (line.includes('⏳')) return 'text-ink-500'
-    if (line.includes('🔐') || line.includes('🚀') || line.includes('📤') || line.includes('🖥️')) return 'text-flame-300'
+    if (line.includes('🔐') || line.includes('🚀') || line.includes('📤') || line.includes('🖥️') || line.includes('🛑')) return 'text-flame-300'
     return 'text-ink-300'
   }
 
@@ -1186,7 +1210,7 @@ function ServerBanner({ online }) {
 }
 
 export default function DashboardPage() {
-  const { campaigns, loading, refetch, updateStatus } = useCampaigns()
+  const { campaigns, loading, refetch, updateStatus, retryFailedPosts } = useCampaigns()
   const [serverOnline, setServerOnline] = useState(false)
 
   useEffect(() => {
@@ -1251,7 +1275,12 @@ export default function DashboardPage() {
       ) : (
         <div className="space-y-3 overflow-y-auto pr-1" style={{ maxHeight: '600px' }}>
           {[...active, ...paused, ...completed].map(c => (
-            <CampaignRow key={c.id} campaign={c} onToggle={updateStatus} />
+            <CampaignRow
+              key={c.id}
+              campaign={c}
+              onToggle={updateStatus}
+              onRetryFailed={retryFailedPosts}
+            />
           ))}
         </div>
       )}

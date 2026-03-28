@@ -155,5 +155,33 @@ export function useCampaigns() {
     setCampaigns(prev => prev.map(c => (c.id === id ? { ...c, status } : c)))
   }
 
-  return { campaigns, loading, refetch: fetch, createCampaign, updateStatus }
+  const retryFailedPosts = async (campaignId) => {
+    const now = new Date().toISOString()
+
+    const { error } = await supabase
+      .from('post_queue')
+      .update({
+        status: 'pending',
+        error_log: null,
+        assigned_bot_id: null,
+        claimed_at: null,
+        posted_at: null,
+        scheduled_at: now,
+      })
+      .eq('campaign_id', campaignId)
+      .eq('status', 'failed')
+
+    if (error) throw new Error(error.message)
+
+    await fetch()
+  }
+
+  return {
+    campaigns,
+    loading,
+    refetch: fetch,
+    createCampaign,
+    updateStatus,
+    retryFailedPosts,
+  }
 }

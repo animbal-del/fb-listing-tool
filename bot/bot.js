@@ -657,7 +657,7 @@ async function main() {
         await dbUpdate('campaigns', CAMPAIGN_ID, { status: 'completed' })
         console.log('✅ Campaign marked as completed')
       } else {
-        console.log('ℹ️ No unclaimed items left for this bot right now')
+        console.log('ℹ️ No due items available for this bot right now')
       }
 
       break

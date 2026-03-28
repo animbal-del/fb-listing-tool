@@ -262,7 +262,7 @@ app.post('/bots/:id/start', async (req, res) => {
       p.stderr.on('data', d => String(d).split('\n').filter(Boolean).forEach(l => pushLog(id, `⚠️ ${l}`)))
 
       p.on('close', async code => {
-        pushLog(id, code === 0 ? '🎉 Campaign complete!' : `⚠️ Bot stopped (code ${code})`)
+        pushLog(id, code === 0 ? '✅ Bot finished cleanly' : `⚠️ Bot stopped (code ${code})`)
 
         if (procs[id]) procs[id].proc = null
 
@@ -290,7 +290,7 @@ app.post('/bots/:id/start', async (req, res) => {
           await sleep(5000)
           spawnBot(next)
         } else {
-          pushLog(id, '✅ Queue complete — all campaigns done!')
+          pushLog(id, '✅ Queue complete — no more queued campaigns')
           await db(sb => sb.from('bot_accounts').update({ status: 'idle' }).eq('id', id))
         }
       })
