@@ -26,6 +26,8 @@ let CURRENT_CONTEXT = null
 let CURRENT_PAGE = null
 let _cdTimer = null
 
+const EMPTY_QUEUE_POLL_MS = 60 * 1000
+
 process.on('SIGTERM', async () => {
   STOP_REQUESTED = true
   console.log('🛑 Stop signal received')
@@ -656,11 +658,12 @@ async function main() {
         console.log('🎉 All posts complete!')
         await dbUpdate('campaigns', CAMPAIGN_ID, { status: 'completed' })
         console.log('✅ Campaign marked as completed')
+        break
       } else {
-        console.log('ℹ️ No due items available for this bot right now')
+        console.log('ℹ️ No due items available right now — waiting to retry')
+        await interruptibleSleep(EMPTY_QUEUE_POLL_MS, 'Waiting for next due campaign item')
+        continue
       }
-
-      break
     }
 
     console.log(`\n📤 [${todayCount + 1}/${runtime.effectiveMaxPostsPerDay}] → ${item.groups.name}`)
