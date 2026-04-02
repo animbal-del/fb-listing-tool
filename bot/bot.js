@@ -548,15 +548,18 @@ async function main() {
     Math.random() * ((cfg.max_delay_seconds - cfg.min_delay_seconds) * 1000)
 
   console.log(`\n🏠 FB Listing Bot — ${cfg.name}`)
-  console.log(`   Campaign:  ${CAMPAIGN_ID}`)
-  console.log(`   Effective Max/day: ${runtime.effectiveMaxPostsPerDay}`)
-  console.log(`   Effective Window:  ${runtime.effectiveStartHour}:00 – ${runtime.effectiveEndHour}:00`)
-  console.log(`   Bot Max/day:       ${runtime.botMax}`)
-  console.log(`   Bot Window:        ${runtime.botStart}:00 – ${runtime.botEnd}:00`)
-  console.log(`   Campaign Max/day:  ${runtime.campaignMax}`)
-  console.log(`   Campaign Window:   ${runtime.campaignStart}:00 – ${runtime.campaignEnd}:00`)
-  console.log(`   Delay:             ${cfg.min_delay_seconds}s – ${cfg.max_delay_seconds}s`)
-  console.log(`   UI profile:        ${uiProfile ? 'trained selectors loaded' : 'using fallback selectors'}\n`)
+  console.log(`   Campaign:            ${CAMPAIGN_ID}`)
+  console.log(`   Effective Max/day:   ${runtime.effectiveMaxPostsPerDay}`)
+  console.log(`   Effective Window:    ${runtime.effectiveStartHour}:00 – ${runtime.effectiveEndHour}:00`)
+  console.log(`   Bot Max/day:         ${runtime.botMax}`)
+  console.log(`   Bot Window:          ${runtime.botStart}:00 – ${runtime.botEnd}:00`)
+  console.log(`   Campaign Max/day:    ${runtime.campaignMax}`)
+  console.log(`   Campaign Window:     ${runtime.campaignStart}:00 – ${runtime.campaignEnd}:00`)
+  console.log(`   Delay:               ${cfg.min_delay_seconds}s – ${cfg.max_delay_seconds}s`)
+  console.log(`   Runtime now:         ${new Date().toString()}`)
+  console.log(`   Runtime hour:        ${new Date().getHours()}`)
+  console.log(`   TZ env:              ${process.env.TZ || 'not set'}`)
+  console.log(`   UI profile:          ${uiProfile ? 'trained selectors loaded' : 'using fallback selectors'}\n`)
 
   const userDataDir = SESSION_FILE.replace('.json', '_profile')
   if (!existsSync(userDataDir)) {
@@ -626,6 +629,7 @@ async function main() {
       next.setHours(runtime.effectiveStartHour, 0, 0, 0)
       const waitMs = next - Date.now()
       console.log(`⏰ Outside effective window (${runtime.effectiveStartHour}:00–${runtime.effectiveEndHour}:00)`)
+      console.log(`   Current runtime clock: ${now.toString()}`)
       await interruptibleSleep(waitMs, 'Waiting for posting window')
       continue
     }
