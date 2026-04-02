@@ -8,6 +8,7 @@ import { createClient } from '@supabase/supabase-js'
 import { existsSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
+import http from 'http'
 import httpProxy from 'http-proxy'
 import 'dotenv/config'
 
@@ -81,10 +82,52 @@ function runDetached(cmd, args = []) {
   proc.unref()
 }
 
+function httpGet(url, timeoutMs = 2500) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(url, { timeout: timeoutMs }, res => {
+      let body = ''
+      res.on('data', chunk => { body += chunk.toString() })
+      res.on('end', () => resolve({ statusCode: res.statusCode || 0, body }))
+    })
+    req.on('timeout', () => {
+      req.destroy(new Error('timeout'))
+    })
+    req.on('error', reject)
+  })
+}
+
+async function isRemoteDesktopHealthy() {
+  try {
+    const res = await httpGet('http://127.0.0.1:6080/vnc.html', 2000)
+    return res.statusCode === 200 && String(res.body || '').includes('noVNC')
+  } catch {
+    return false
+  }
+}
+
+async function waitForRemoteDesktopReady(timeoutMs = 15000) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    if (await isRemoteDesktopHealthy()) return true
+    await sleep(500)
+  }
+  return false
+}
+
 async function startRemoteDesktop() {
+  const alreadyHealthy = await isRemoteDesktopHealthy()
+  if (alreadyHealthy) {
+    return { ok: true, viewer_url: REMOTE_VIEWER_URL, reused: true }
+  }
+
   runDetached('bash', [join(__dir, 'start-remote-login-session.sh')])
-  await sleep(3000)
-  return { ok: true, viewer_url: REMOTE_VIEWER_URL }
+
+  const ready = await waitForRemoteDesktopReady(15000)
+  if (!ready) {
+    throw new Error('Remote desktop failed to become ready on port 6080')
+  }
+
+  return { ok: true, viewer_url: REMOTE_VIEWER_URL, reused: false }
 }
 
 async function stopRemoteDesktop() {
@@ -124,13 +167,22 @@ app.use('/browser', (req, res) => {
 
 app.get('/', (_req, res) => res.json({
   status: '✅ FB Listing Bot Server running',
-  version: '4.2',
+  version: '4.3',
   supabase: supabase ? '✅ connected' : '❌ not configured',
   env_check: { url: !!SUPA_URL, key: !!SUPA_KEY },
   remote_viewer_url: REMOTE_VIEWER_URL,
 }))
 
 app.get('/health', (_req, res) => res.json({ ok: true, supabase: !!supabase }))
+
+app.get('/remote-session/health', async (_req, res) => {
+  const healthy = await isRemoteDesktopHealthy()
+  res.json({
+    ok: true,
+    healthy,
+    viewer_url: REMOTE_VIEWER_URL,
+  })
+})
 
 app.post('/remote-session/start', async (_req, res) => {
   try {
@@ -194,7 +246,7 @@ async function handleLoginRemote(req, res) {
 
     const sp = join(__dir, bot.session_file || `fb_session_${bot.id.slice(0, 8)}.json`)
 
-    await startRemoteDesktop()
+    const remote = await startRemoteDesktop()
 
     const env = {
       ...process.env,
@@ -205,6 +257,7 @@ async function handleLoginRemote(req, res) {
 
     pushLog(id, `🔐 Opening remote login session for ${bot.name} (${bot.fb_email})`)
     pushLog(id, `🖥️ Remote viewer: ${REMOTE_VIEWER_URL}`)
+    pushLog(id, remote.reused ? '♻️ Reusing shared remote desktop' : '🆕 Started shared remote desktop')
 
     const proc = spawn('node', [join(__dir, 'login.js')], { env, cwd: __dir })
     procs[id] = { ...(procs[id] || {}), proc, type: 'login', logs: procs[id]?.logs || [] }
@@ -222,7 +275,7 @@ async function handleLoginRemote(req, res) {
       if (procs[id]) procs[id].proc = null
     })
 
-    res.json({ ok: true, viewer_url: REMOTE_VIEWER_URL })
+    res.json({ ok: true, viewer_url: REMOTE_VIEWER_URL, reused: !!remote.reused })
   } catch (e) {
     console.error('/login error:', e.message)
     res.status(500).json({ error: e.message })
@@ -262,7 +315,7 @@ app.post('/bots/:id/start', async (req, res) => {
       p.stderr.on('data', d => String(d).split('\n').filter(Boolean).forEach(l => pushLog(id, `⚠️ ${l}`)))
 
       p.on('close', async code => {
-        pushLog(id, code === 0 ? '✅ Bot finished cleanly' : `⚠️ Bot stopped (code ${code})`)
+        pushLog(id, code === 0 ? '🎉 Campaign run ended' : `⚠️ Bot stopped (code ${code})`)
 
         if (procs[id]) procs[id].proc = null
 
@@ -285,7 +338,7 @@ app.post('/bots/:id/start', async (req, res) => {
         }
 
         if (next) {
-          pushLog(id, `⏭️ Queue: starting next campaign in 5s...`)
+          pushLog(id, '⏭️ Queue: starting next campaign in 5s...')
           pushLog(id, `📋 Campaign: ${next}`)
           await sleep(5000)
           spawnBot(next)
