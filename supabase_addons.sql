@@ -13,3 +13,6 @@ alter table bot_accounts add column if not exists notes text;
 alter table bot_accounts alter column session_file set default 'pending';
 
 -- Done
+
+
+alter table post_queue add column if not exists claimed_at timestamptz;

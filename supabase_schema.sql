@@ -51,7 +51,7 @@ create table if not exists post_queue (
   group_id uuid references groups(id) on delete cascade,
   assigned_bot_id uuid,  -- which bot account is handling this item
   scheduled_at timestamptz,
-  status text default 'pending' check (status in ('pending', 'posted', 'skipped', 'failed')),
+  status text default 'pending' check (status in ('pending', 'processing', 'posted', 'skipped', 'failed')),
   posted_at timestamptz,
   error_log text,
   duplicate_warned boolean default false,
@@ -65,7 +65,7 @@ create table if not exists bot_accounts (
   fb_email text,
   fb_password text,                            -- stored for automated login
   session_file text,                           -- filename e.g. fb_session_bot1.json
-  status text default 'idle' check (status in ('idle', 'running', 'paused', 'error')),
+  status text default 'idle' check (status in ('idle', 'running', 'paused', 'error', 'logging_in')),
   last_active timestamptz,
   posts_today integer default 0,
   posts_today_date date default current_date,
@@ -138,3 +138,6 @@ $$ language plpgsql;
 -- (safe to run even if column already exists)
 -- ============================================================
 alter table bot_accounts add column if not exists fb_password text;
+
+
+alter table post_queue add column if not exists claimed_at timestamptz;

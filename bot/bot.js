@@ -226,17 +226,36 @@ function cleanPhotoCache() {
 // ── Queue claiming helpers ────────────────────────────────
 async function getNextItem() {
   try {
-    const { data: claimedId, error: claimError } = await supabase.rpc('claim_next_post_queue_item', {
-      p_campaign_id: CAMPAIGN_ID,
-      p_bot_id: BOT_ACCOUNT_ID,
-    })
+    const nowIso = new Date().toISOString()
+    const { data: candidate, error: candidateError } = await supabase
+      .from('post_queue')
+      .select('id')
+      .eq('campaign_id', CAMPAIGN_ID)
+      .eq('assigned_bot_id', BOT_ACCOUNT_ID)
+      .eq('status', 'pending')
+      .or(`scheduled_at.is.null,scheduled_at.lte.${nowIso}`)
+      .order('scheduled_at', { ascending: true, nullsFirst: true })
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle()
 
-    if (claimError) {
-      console.log(`   ⚠️ Claim failed: ${claimError.message}`)
+    if (candidateError) {
+      console.log(`   ⚠️ Claim lookup failed: ${candidateError.message}`)
       return null
     }
+    if (!candidate?.id) return null
 
-    if (!claimedId) return null
+    const { error: claimError } = await supabase
+      .from('post_queue')
+      .update({ status: 'processing', claimed_at: new Date().toISOString() })
+      .eq('id', candidate.id)
+      .eq('status', 'pending')
+      .eq('assigned_bot_id', BOT_ACCOUNT_ID)
+
+    if (claimError) {
+      console.log(`   ⚠️ Claim update failed: ${claimError.message}`)
+      return null
+    }
 
     const { data, error } = await supabase
       .from('post_queue')
@@ -249,7 +268,7 @@ async function getNextItem() {
         properties(id,title,description,rent,deposit,locality,phone,whatsapp_link,photos),
         groups(id,name,fb_url)
       `)
-      .eq('id', claimedId)
+      .eq('id', candidate.id)
       .single()
 
     if (error) {
@@ -270,6 +289,7 @@ async function campaignHasRemainingWork() {
       .from('post_queue')
       .select('id', { count: 'exact', head: true })
       .eq('campaign_id', CAMPAIGN_ID)
+      .eq('assigned_bot_id', BOT_ACCOUNT_ID)
       .in('status', ['pending', 'processing'])
 
     if (error) {
@@ -659,13 +679,11 @@ async function main() {
       const hasRemaining = await campaignHasRemainingWork()
 
       if (!hasRemaining) {
-        console.log('🎉 All posts complete!')
-        await dbUpdate('campaigns', CAMPAIGN_ID, { status: 'completed' })
-        console.log('✅ Campaign marked as completed')
+        console.log('✅ No more assigned work for this bot on this campaign today')
         break
       } else {
-        console.log('ℹ️ No due items available right now — waiting to retry')
-        await interruptibleSleep(EMPTY_QUEUE_POLL_MS, 'Waiting for next due campaign item')
+        console.log('ℹ️ Assigned items exist, but none are due yet — waiting to retry')
+        await interruptibleSleep(EMPTY_QUEUE_POLL_MS, 'Waiting for next assigned campaign item')
         continue
       }
     }

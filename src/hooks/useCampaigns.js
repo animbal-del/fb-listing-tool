@@ -96,48 +96,16 @@ export function useCampaigns() {
 
     if (ce) throw new Error(ce.message)
 
-    const MIN_GAP = 8
-    const MAX_GAP = 22
-    const scheduledItems = []
-    let cursor = new Date()
-
-    const h = cursor.getHours()
-    if (h < startHour) cursor.setHours(startHour, 0, 0, 0)
-    if (h >= endHour) {
-      cursor.setDate(cursor.getDate() + 1)
-      cursor.setHours(startHour, 0, 0, 0)
-    }
-
-    let postsToday = 0
-
-    for (let i = 0; i < queueItems.length; i++) {
-      scheduledItems.push({
-        campaign_id: campaign.id,
-        property_id: queueItems[i].property_id,
-        group_id: queueItems[i].group_id,
-        scheduled_at: cursor.toISOString(),
-        duplicate_warned: queueItems[i].duplicate_warned || false,
-        status: 'pending',
-      })
-
-      postsToday++
-
-      if (postsToday >= postsPerDay) {
-        cursor = new Date(cursor)
-        cursor.setDate(cursor.getDate() + 1)
-        cursor.setHours(startHour, 0, 0, 0)
-        postsToday = 0
-      } else {
-        const gapMins = MIN_GAP + Math.random() * (MAX_GAP - MIN_GAP)
-        cursor = new Date(cursor.getTime() + gapMins * 60 * 1000)
-
-        if (cursor.getHours() >= endHour) {
-          cursor.setDate(cursor.getDate() + 1)
-          cursor.setHours(startHour, 0, 0, 0)
-          postsToday = 0
-        }
-      }
-    }
+    const scheduledItems = queueItems.map(item => ({
+      campaign_id: campaign.id,
+      property_id: item.property_id,
+      group_id: item.group_id,
+      scheduled_at: null,
+      duplicate_warned: item.duplicate_warned || false,
+      status: 'pending',
+      assigned_bot_id: null,
+      claimed_at: null,
+    }))
 
     for (let i = 0; i < scheduledItems.length; i += 100) {
       const batch = scheduledItems.slice(i, i + 100)

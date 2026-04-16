@@ -58,3 +58,40 @@ create policy "all_groups"       on groups         for all using (true) with che
 
 -- Done
 select 'Migration v3 complete ✅' as result;
+
+
+alter table post_queue add column if not exists claimed_at timestamptz;
+
+
+alter table post_queue add column if not exists claimed_at timestamptz;
+alter table post_queue add column if not exists assigned_bot_id uuid;
+
+create or replace function public.claim_next_post_queue_item(p_campaign_id uuid, p_bot_id uuid default null::uuid)
+returns uuid
+language plpgsql
+as $function$
+declare
+  v_item_id uuid;
+begin
+  with next_item as (
+    select id
+    from post_queue
+    where campaign_id = p_campaign_id
+      and status = 'pending'
+      and (p_bot_id is null or assigned_bot_id = p_bot_id)
+      and (scheduled_at is null or scheduled_at <= now())
+    order by scheduled_at asc nulls first, created_at asc
+    for update skip locked
+    limit 1
+  )
+  update post_queue q
+  set status = 'processing',
+      assigned_bot_id = coalesce(p_bot_id, q.assigned_bot_id),
+      claimed_at = now()
+  from next_item
+  where q.id = next_item.id
+  returning q.id into v_item_id;
+
+  return v_item_id;
+end;
+$function$;
