@@ -30,7 +30,6 @@ export default function CampaignPage() {
     return map
   })
 
-
   // Filters
   const [propSearch,     setPropSearch]     = useState('')
   const [propLocality,   setPropLocality]   = useState('all')
@@ -120,7 +119,7 @@ export default function CampaignPage() {
       <div className="mb-8">
         <h1 className="text-2xl font-semibold text-ink-100">{duplicateCampaign ? 'Create Similar Campaign' : 'New Campaign'}</h1>
         <p className="text-sm text-ink-400 mt-0.5">
-          {duplicateCampaign ? 'Review and launch a fresh campaign using the previous campaign details' : 'Select listings and groups to build a posting queue'}
+          {duplicateCampaign ? 'Review the copied listings, groups, and settings before launching a fresh campaign' : 'Select listings and groups to build a posting queue'}
         </p>
       </div>
 

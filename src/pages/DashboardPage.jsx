@@ -1266,7 +1266,7 @@ export default function DashboardPage() {
       }))
       .filter(item => item.property_id && item.group_id)
 
-    navigate('/campaigns', {
+    navigate('/campaign', {
       state: {
         duplicateCampaign: {
           sourceCampaignId: campaign.id,
