@@ -63,6 +63,17 @@ async function dbGet(table, id) {
   }
 }
 
+
+async function markItem(id, status, errorLog = null) {
+  await dbUpdate('post_queue', id, {
+    status,
+    error_log: errorLog,
+    posted_at: status === 'posted' ? new Date().toISOString() : null,
+    claimed_at: null,
+    ...(BOT_ACCOUNT_ID ? { assigned_bot_id: BOT_ACCOUNT_ID } : {}),
+  })
+}
+
 async function loadUiProfile(botId) {
   if (!botId) return null
   try {
