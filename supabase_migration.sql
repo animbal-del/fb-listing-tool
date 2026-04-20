@@ -1,93 +1,80 @@
 -- ============================================================
--- MIGRATION v3 — Run this in Supabase SQL Editor
--- Safe to run multiple times
+-- DAILY DISPATCH MIGRATION
+-- Dynamic campaign quota + bot-paced dispatch
+-- No pre-scheduled per-row timings required
 -- ============================================================
 
--- 1. Create bot_accounts table (main fix)
-create table if not exists bot_accounts (
-  id                  uuid primary key default gen_random_uuid(),
-  name                text not null,
-  fb_email            text not null,
-  fb_password         text not null,
-  session_file        text,
-  status              text default 'idle' check (status in ('idle','running','paused','error','logging_in')),
-  last_active         timestamptz,
-  posts_today         integer default 0,
-  posts_today_date    date default current_date,
-  total_posts         integer default 0,
-  active              boolean default true,
-  -- Bot behaviour settings (editable from dashboard)
-  min_delay_seconds   integer default 480,
-  max_delay_seconds   integer default 900,
-  max_posts_per_day   integer default 18,
-  post_start_hour     integer default 9,
-  post_end_hour       integer default 20,
-  session_cap         integer default 8,
-  session_break_min   integer default 120,
-  session_break_max   integer default 180,
-  created_at          timestamptz default now()
-);
+-- 1. Ensure helper columns exist
+alter table public.post_queue add column if not exists assigned_bot_id uuid;
+alter table public.post_queue add column if not exists claimed_at timestamptz;
 
--- 2. Add new settings columns if table already exists
-alter table bot_accounts add column if not exists min_delay_seconds  integer default 480;
-alter table bot_accounts add column if not exists max_delay_seconds  integer default 900;
-alter table bot_accounts add column if not exists max_posts_per_day  integer default 18;
-alter table bot_accounts add column if not exists post_start_hour    integer default 9;
-alter table bot_accounts add column if not exists post_end_hour      integer default 20;
-alter table bot_accounts add column if not exists session_cap        integer default 8;
-alter table bot_accounts add column if not exists session_break_min  integer default 120;
-alter table bot_accounts add column if not exists session_break_max  integer default 180;
+-- 2. Useful indexes
+create index if not exists idx_post_queue_campaign_status_created
+  on public.post_queue(campaign_id, status, created_at);
 
--- 3. Add assigned_bot_id to post_queue if missing
-alter table post_queue add column if not exists assigned_bot_id uuid;
+create index if not exists idx_post_queue_claimed_at
+  on public.post_queue(claimed_at);
 
--- 4. RLS — open access for everything
-alter table bot_accounts enable row level security;
+create index if not exists idx_post_queue_posted_at
+  on public.post_queue(posted_at);
 
-drop policy if exists "all_bot_accounts"  on bot_accounts;
-drop policy if exists "all_campaigns"     on campaigns;
-drop policy if exists "all_post_queue"    on post_queue;
-drop policy if exists "all_properties"    on properties;
-drop policy if exists "all_groups"        on groups;
+create index if not exists idx_post_queue_assigned_bot
+  on public.post_queue(assigned_bot_id);
 
-create policy "all_bot_accounts" on bot_accounts  for all using (true) with check (true);
-create policy "all_campaigns"    on campaigns      for all using (true) with check (true);
-create policy "all_post_queue"   on post_queue     for all using (true) with check (true);
-create policy "all_properties"   on properties     for all using (true) with check (true);
-create policy "all_groups"       on groups         for all using (true) with check (true);
+-- 3. Dynamic claim function
+drop function if exists public.claim_next_post_queue_item(uuid, uuid);
+drop function if exists public.claim_next_post_queue_item(uuid, uuid, timestamptz, timestamptz);
 
--- Done
-select 'Migration v3 complete ✅' as result;
-
-
-alter table post_queue add column if not exists claimed_at timestamptz;
-
-
-alter table post_queue add column if not exists claimed_at timestamptz;
-alter table post_queue add column if not exists assigned_bot_id uuid;
-
-create or replace function public.claim_next_post_queue_item(p_campaign_id uuid, p_bot_id uuid default null::uuid)
+create or replace function public.claim_next_post_queue_item(
+  p_campaign_id uuid,
+  p_bot_id uuid default null::uuid,
+  p_day_start timestamptz default null::timestamptz,
+  p_day_end timestamptz default null::timestamptz
+)
 returns uuid
 language plpgsql
 as $function$
 declare
   v_item_id uuid;
+  v_daily_limit integer;
+  v_posted_today integer;
+  v_day_start timestamptz;
+  v_day_end timestamptz;
 begin
+  select c.posts_per_day_limit
+    into v_daily_limit
+  from public.campaigns c
+  where c.id = p_campaign_id;
+
+  v_day_start := coalesce(p_day_start, date_trunc('day', now()));
+  v_day_end := coalesce(p_day_end, v_day_start + interval '1 day');
+
+  select count(*)
+    into v_posted_today
+  from public.post_queue q
+  where q.campaign_id = p_campaign_id
+    and q.status = 'posted'
+    and q.posted_at >= v_day_start
+    and q.posted_at < v_day_end;
+
+  if coalesce(v_daily_limit, 0) > 0 and v_posted_today >= v_daily_limit then
+    return null;
+  end if;
+
   with next_item as (
-    select id
-    from post_queue
-    where campaign_id = p_campaign_id
-      and status = 'pending'
-      and (p_bot_id is null or assigned_bot_id = p_bot_id)
-      and (scheduled_at is null or scheduled_at <= now())
-    order by scheduled_at asc nulls first, created_at asc
+    select q.id
+    from public.post_queue q
+    where q.campaign_id = p_campaign_id
+      and q.status = 'pending'
+    order by q.created_at asc, q.id asc
     for update skip locked
     limit 1
   )
-  update post_queue q
-  set status = 'processing',
-      assigned_bot_id = coalesce(p_bot_id, q.assigned_bot_id),
-      claimed_at = now()
+  update public.post_queue q
+  set
+    status = 'processing',
+    assigned_bot_id = coalesce(p_bot_id, q.assigned_bot_id),
+    claimed_at = now()
   from next_item
   where q.id = next_item.id
   returning q.id into v_item_id;
@@ -95,3 +82,5 @@ begin
   return v_item_id;
 end;
 $function$;
+
+select 'Dynamic dispatch migration complete ✅' as result;

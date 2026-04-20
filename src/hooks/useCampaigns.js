@@ -14,12 +14,15 @@ export function useCampaigns() {
           *,
           post_queue (
             id,
+            property_id,
+            group_id,
             status,
             scheduled_at,
             posted_at,
             error_log,
             assigned_bot_id,
             claimed_at,
+            duplicate_warned,
             properties ( id, title, locality, photos ),
             groups ( id, name, fb_url )
           )
@@ -96,19 +99,19 @@ export function useCampaigns() {
 
     if (ce) throw new Error(ce.message)
 
-    const scheduledItems = queueItems.map(item => ({
+    const pendingItems = queueItems.map(item => ({
       campaign_id: campaign.id,
       property_id: item.property_id,
       group_id: item.group_id,
-      scheduled_at: null,
       duplicate_warned: item.duplicate_warned || false,
       status: 'pending',
       assigned_bot_id: null,
       claimed_at: null,
+      scheduled_at: null,
     }))
 
-    for (let i = 0; i < scheduledItems.length; i += 100) {
-      const batch = scheduledItems.slice(i, i + 100)
+    for (let i = 0; i < pendingItems.length; i += 100) {
+      const batch = pendingItems.slice(i, i + 100)
       const { error: qe } = await supabase.from('post_queue').insert(batch)
       if (qe) throw new Error(qe.message)
     }
@@ -124,8 +127,6 @@ export function useCampaigns() {
   }
 
   const retryFailedPosts = async (campaignId) => {
-    const now = new Date().toISOString()
-
     const { error } = await supabase
       .from('post_queue')
       .update({
@@ -134,7 +135,7 @@ export function useCampaigns() {
         assigned_bot_id: null,
         claimed_at: null,
         posted_at: null,
-        scheduled_at: now,
+        scheduled_at: null,
       })
       .eq('campaign_id', campaignId)
       .eq('status', 'failed')

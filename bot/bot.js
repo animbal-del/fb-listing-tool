@@ -224,38 +224,42 @@ function cleanPhotoCache() {
 }
 
 // ── Queue claiming helpers ────────────────────────────────
+
+function localDayString(d = new Date()) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+function localDayBounds(d = new Date()) {
+  const start = new Date(d)
+  start.setHours(0, 0, 0, 0)
+  const end = new Date(start)
+  end.setDate(end.getDate() + 1)
+  return {
+    startIso: start.toISOString(),
+    endIso: end.toISOString(),
+    dayKey: localDayString(d),
+  }
+}
+
 async function getNextItem() {
   try {
-    const nowIso = new Date().toISOString()
-    const { data: candidate, error: candidateError } = await supabase
-      .from('post_queue')
-      .select('id')
-      .eq('campaign_id', CAMPAIGN_ID)
-      .eq('assigned_bot_id', BOT_ACCOUNT_ID)
-      .eq('status', 'pending')
-      .or(`scheduled_at.is.null,scheduled_at.lte.${nowIso}`)
-      .order('scheduled_at', { ascending: true, nullsFirst: true })
-      .order('created_at', { ascending: true })
-      .limit(1)
-      .maybeSingle()
-
-    if (candidateError) {
-      console.log(`   ⚠️ Claim lookup failed: ${candidateError.message}`)
-      return null
-    }
-    if (!candidate?.id) return null
-
-    const { error: claimError } = await supabase
-      .from('post_queue')
-      .update({ status: 'processing', claimed_at: new Date().toISOString() })
-      .eq('id', candidate.id)
-      .eq('status', 'pending')
-      .eq('assigned_bot_id', BOT_ACCOUNT_ID)
+    const bounds = localDayBounds()
+    const { data: claimedId, error: claimError } = await supabase.rpc('claim_next_post_queue_item', {
+      p_campaign_id: CAMPAIGN_ID,
+      p_bot_id: BOT_ACCOUNT_ID,
+      p_day_start: bounds.startIso,
+      p_day_end: bounds.endIso,
+    })
 
     if (claimError) {
-      console.log(`   ⚠️ Claim update failed: ${claimError.message}`)
+      console.log(`   ⚠️ Claim failed: ${claimError.message}`)
       return null
     }
+
+    if (!claimedId) return null
 
     const { data, error } = await supabase
       .from('post_queue')
@@ -268,7 +272,7 @@ async function getNextItem() {
         properties(id,title,description,rent,deposit,locality,phone,whatsapp_link,photos),
         groups(id,name,fb_url)
       `)
-      .eq('id', candidate.id)
+      .eq('id', claimedId)
       .single()
 
     if (error) {
@@ -283,34 +287,52 @@ async function getNextItem() {
   }
 }
 
-async function campaignHasRemainingWork() {
+async function campaignDispatchSnapshot() {
   try {
-    const { count, error } = await supabase
-      .from('post_queue')
-      .select('id', { count: 'exact', head: true })
-      .eq('campaign_id', CAMPAIGN_ID)
-      .eq('assigned_bot_id', BOT_ACCOUNT_ID)
-      .in('status', ['pending', 'processing'])
+    const bounds = localDayBounds()
+    const [{ data: campaign }, { count: pendingCount }, { count: processingCount }, { count: postedToday }] = await Promise.all([
+      supabase
+        .from('campaigns')
+        .select('id, total_posts, posts_per_day_limit, status')
+        .eq('id', CAMPAIGN_ID)
+        .single(),
+      supabase
+        .from('post_queue')
+        .select('id', { count: 'exact', head: true })
+        .eq('campaign_id', CAMPAIGN_ID)
+        .eq('status', 'pending'),
+      supabase
+        .from('post_queue')
+        .select('id', { count: 'exact', head: true })
+        .eq('campaign_id', CAMPAIGN_ID)
+        .eq('status', 'processing'),
+      supabase
+        .from('post_queue')
+        .select('id', { count: 'exact', head: true })
+        .eq('campaign_id', CAMPAIGN_ID)
+        .eq('status', 'posted')
+        .gte('posted_at', bounds.startIso)
+        .lt('posted_at', bounds.endIso),
+    ])
 
-    if (error) {
-      console.log(`   ⚠️ Remaining work check failed: ${error.message}`)
-      return false
+    return {
+      campaign,
+      pendingCount: pendingCount || 0,
+      processingCount: processingCount || 0,
+      postedToday: postedToday || 0,
+      dailyCap: Number(campaign?.posts_per_day_limit ?? 0),
+      todayRemaining: Math.max(0, Number(campaign?.posts_per_day_limit ?? 0) - Number(postedToday || 0)),
     }
-
-    return (count || 0) > 0
-  } catch {
-    return false
+  } catch (e) {
+    console.log(`   ⚠️ Campaign snapshot failed: ${e.message}`)
+    return null
   }
 }
 
-async function markItem(id, status, errorLog = null) {
-  await dbUpdate('post_queue', id, {
-    status,
-    error_log: errorLog,
-    posted_at: status === 'posted' ? new Date().toISOString() : null,
-    claimed_at: null,
-    ...(BOT_ACCOUNT_ID ? { assigned_bot_id: BOT_ACCOUNT_ID } : {}),
-  })
+async function campaignHasRemainingWork() {
+  const snapshot = await campaignDispatchSnapshot()
+  if (!snapshot) return false
+  return snapshot.pendingCount > 0 || snapshot.processingCount > 0
 }
 
 // ── Selector helpers ──────────────────────────────────────
@@ -607,8 +629,8 @@ async function main() {
   }
   console.log('✅ Logged in\n')
 
-  let todayCount = 0
   let todayDate = new Date().toDateString()
+  let todayCount = cfg.posts_today_date === localDayString(new Date()) ? Number(cfg.posts_today || 0) : 0
   let sessionCount = 0
   let isFirstPost = true
   let loopCount = 0
@@ -640,6 +662,9 @@ async function main() {
       todayDate = now.toDateString()
       todayCount = 0
       console.log('🌅 New day — counter reset')
+      if (BOT_ACCOUNT_ID) {
+        await dbUpdate('bot_accounts', BOT_ACCOUNT_ID, { posts_today: 0, posts_today_date: localDayString(now) })
+      }
     }
 
     const hour = now.getHours()
@@ -676,16 +701,30 @@ async function main() {
 
     const item = await getNextItem()
     if (!item) {
-      const hasRemaining = await campaignHasRemainingWork()
+      const snapshot = await campaignDispatchSnapshot()
 
-      if (!hasRemaining) {
-        console.log('✅ No more assigned work for this bot on this campaign today')
+      if (!snapshot || (!snapshot.pendingCount && !snapshot.processingCount)) {
+        console.log('🎉 All posts complete!')
+        await dbUpdate('campaigns', CAMPAIGN_ID, { status: 'completed' })
+        console.log('✅ Campaign marked as completed')
         break
-      } else {
-        console.log('ℹ️ Assigned items exist, but none are due yet — waiting to retry')
-        await interruptibleSleep(EMPTY_QUEUE_POLL_MS, 'Waiting for next assigned campaign item')
+      }
+
+      if (snapshot.dailyCap > 0 && snapshot.postedToday >= snapshot.dailyCap) {
+        console.log(`📊 Campaign daily target reached (${snapshot.postedToday}/${snapshot.dailyCap})`)
+        console.log('✅ Ending this campaign run so bot can move to next queued campaign')
+        break
+      }
+
+      if (snapshot.pendingCount === 0 && snapshot.processingCount > 0) {
+        console.log('ℹ️ Other bot(s) are still processing this campaign — waiting briefly')
+        await interruptibleSleep(15000, 'Waiting for in-flight campaign posts')
         continue
       }
+
+      console.log('ℹ️ No dispatchable items right now — waiting to retry')
+      await interruptibleSleep(10000, 'Waiting for next campaign item')
+      continue
     }
 
     console.log(`\n📤 [${todayCount + 1}/${runtime.effectiveMaxPostsPerDay}] → ${item.groups.name}`)
@@ -721,7 +760,7 @@ async function main() {
               posts_today: todayCount,
               total_posts: (botRow?.total_posts || 0) + 1,
               last_active: new Date().toISOString(),
-              posts_today_date: now.toISOString().split('T')[0],
+              posts_today_date: localDayString(now),
             })
           }
 
@@ -746,7 +785,7 @@ async function main() {
           posts_today: todayCount,
           total_posts: (botRow?.total_posts || 0) + 1,
           last_active: new Date().toISOString(),
-          posts_today_date: now.toISOString().split('T')[0],
+          posts_today_date: localDayString(now),
         })
       }
 

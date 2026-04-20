@@ -55,110 +55,6 @@ const procs = {}
 const logSubs = {}
 const botQueues = {}
 
-
-function startOfToday() {
-  const d = new Date()
-  d.setHours(0, 0, 0, 0)
-  return d.toISOString().slice(0, 10)
-}
-
-function buildTodaySlots(count, startHour, endHour, jitterEnabled = false) {
-  if (count <= 0) return []
-  const now = new Date()
-  const start = new Date(now)
-  start.setHours(Number(startHour || 9), 0, 0, 0)
-  const end = new Date(now)
-  end.setHours(Number(endHour || 20), 0, 0, 0)
-  if (end <= start) end.setHours(start.getHours() + 8, 0, 0, 0)
-  const span = end.getTime() - start.getTime()
-  const gap = Math.max(1, Math.floor(span / Math.max(count, 1)))
-  const slots = []
-  for (let i = 0; i < count; i++) {
-    let t = new Date(start.getTime() + i * gap)
-    if (jitterEnabled) {
-      const jitter = Math.floor((Math.random() - 0.5) * Math.min(gap * 0.35, 20 * 60 * 1000))
-      t = new Date(t.getTime() + jitter)
-    }
-    if (i === 0 && t < now) t = new Date(now)
-    slots.push(t.toISOString())
-  }
-  return slots
-}
-
-async function allocateCampaignForToday(campaignId) {
-  const { data: campaign, error: campaignError } = await db(sb => sb.from('campaigns').select('*').eq('id', campaignId).single())
-  if (campaignError || !campaign) throw new Error(campaignError?.message || 'Campaign not found')
-
-  const activeBotIds = Object.entries(procs)
-    .filter(([, meta]) => meta?.type === 'bot' && meta?.campaignId === campaignId)
-    .map(([botId]) => botId)
-
-  if (activeBotIds.length === 0) {
-    return { allocated: 0, activeBotIds: [], shares: {} }
-  }
-
-  const { data: bots, error: botsError } = await db(sb => sb.from('bot_accounts').select('*').in('id', activeBotIds))
-  if (botsError) throw new Error(botsError.message)
-
-  const today = startOfToday()
-  const botRows = (bots || []).map(bot => {
-    const used = bot.posts_today_date === today ? Number(bot.posts_today || 0) : 0
-    const remaining = Math.max(0, Number(bot.max_posts_per_day || 18) - used)
-    return { ...bot, remaining }
-  }).filter(bot => bot.remaining > 0)
-
-  if (botRows.length === 0) return { allocated: 0, activeBotIds, shares: {} }
-
-  const totalBotRemaining = botRows.reduce((sum, bot) => sum + bot.remaining, 0)
-
-  const { count: remainingCount, error: remainingError } = await db(sb => sb.from('post_queue').select('id', { count: 'exact', head: true }).eq('campaign_id', campaignId).in('status', ['pending', 'failed']))
-  if (remainingError) throw new Error(remainingError.message)
-
-  const alreadyAssignedTodayQuery = await db(sb => sb.from('post_queue').select('id', { count: 'exact', head: true }).eq('campaign_id', campaignId).not('assigned_bot_id', 'is', null).gte('scheduled_at', `${today}T00:00:00`).lt('scheduled_at', `${today}T23:59:59.999`))
-  const alreadyAssignedToday = Number(alreadyAssignedTodayQuery.count || 0)
-  const campaignDailyLimit = Number(campaign.posts_per_day_limit || 18)
-  const campaignRemainingForToday = Math.max(0, campaignDailyLimit - alreadyAssignedToday)
-  const todayTarget = Math.min(Number(remainingCount || 0), campaignRemainingForToday, totalBotRemaining)
-
-  if (todayTarget <= 0) return { allocated: 0, activeBotIds, shares: {} }
-
-  const shares = {}
-  let left = todayTarget
-  let botsLeft = botRows.length
-  for (const bot of botRows) {
-    const fair = Math.ceil(left / botsLeft)
-    const share = Math.max(0, Math.min(bot.remaining, fair))
-    shares[bot.id] = share
-    left -= share
-    botsLeft -= 1
-  }
-  if (left > 0) {
-    for (const bot of botRows) {
-      const extraCap = bot.remaining - (shares[bot.id] || 0)
-      const extra = Math.min(extraCap, left)
-      shares[bot.id] += extra
-      left -= extra
-      if (left <= 0) break
-    }
-  }
-
-  for (const bot of botRows) {
-    const share = shares[bot.id] || 0
-    if (share <= 0) continue
-    const { data: items, error: itemsError } = await db(sb => sb.from('post_queue').select('id').eq('campaign_id', campaignId).eq('status', 'pending').is('assigned_bot_id', null).order('created_at', { ascending: true }).limit(share))
-    if (itemsError) throw new Error(itemsError.message)
-    const slots = buildTodaySlots(share, campaign.posting_start_hour, campaign.posting_end_hour, campaign.jitter_enabled)
-    for (let i = 0; i < (items || []).length; i++) {
-      const item = items[i]
-      const slot = slots[i] || new Date().toISOString()
-      const { error: updateError } = await db(sb => sb.from('post_queue').update({ assigned_bot_id: bot.id, scheduled_at: slot, claimed_at: null }).eq('id', item.id))
-      if (updateError) throw new Error(updateError.message)
-    }
-  }
-
-  return { allocated: todayTarget, activeBotIds, shares }
-}
-
 function pushLog(botId, line) {
   if (!procs[botId]) procs[botId] = { proc: null, type: null, logs: [], campaignId: null }
   procs[botId].logs = [...(procs[botId].logs || []).slice(-299), line]
@@ -193,9 +89,7 @@ function httpGet(url, timeoutMs = 2500) {
       res.on('data', chunk => { body += chunk.toString() })
       res.on('end', () => resolve({ statusCode: res.statusCode || 0, body }))
     })
-    req.on('timeout', () => {
-      req.destroy(new Error('timeout'))
-    })
+    req.on('timeout', () => req.destroy(new Error('timeout')))
     req.on('error', reject)
   })
 }
@@ -243,6 +137,43 @@ async function stopRemoteDesktop() {
   return { ok: true }
 }
 
+async function getCampaignSummary(campaignId) {
+  const { data: campaign } = await db(sb =>
+    sb.from('campaigns')
+      .select('id, notes, total_posts, posts_per_day_limit, posting_start_hour, posting_end_hour, jitter_enabled, status')
+      .eq('id', campaignId)
+      .single()
+  )
+
+  const { count: pendingCount } = await db(sb =>
+    sb.from('post_queue')
+      .select('id', { head: true, count: 'exact' })
+      .eq('campaign_id', campaignId)
+      .eq('status', 'pending')
+  )
+
+  const { count: processingCount } = await db(sb =>
+    sb.from('post_queue')
+      .select('id', { head: true, count: 'exact' })
+      .eq('campaign_id', campaignId)
+      .eq('status', 'processing')
+  )
+
+  const { count: postedCount } = await db(sb =>
+    sb.from('post_queue')
+      .select('id', { head: true, count: 'exact' })
+      .eq('campaign_id', campaignId)
+      .eq('status', 'posted')
+  )
+
+  return {
+    campaign,
+    pendingCount: pendingCount || 0,
+    processingCount: processingCount || 0,
+    postedCount: postedCount || 0,
+  }
+}
+
 // noVNC HTTP + WebSocket proxy to local 6080
 const browserProxy = httpProxy.createProxyServer({
   target: 'http://127.0.0.1:6080',
@@ -271,7 +202,7 @@ app.use('/browser', (req, res) => {
 
 app.get('/', (_req, res) => res.json({
   status: '✅ FB Listing Bot Server running',
-  version: '4.3',
+  version: '5.0',
   supabase: supabase ? '✅ connected' : '❌ not configured',
   env_check: { url: !!SUPA_URL, key: !!SUPA_KEY },
   remote_viewer_url: REMOTE_VIEWER_URL,
@@ -281,11 +212,7 @@ app.get('/health', (_req, res) => res.json({ ok: true, supabase: !!supabase }))
 
 app.get('/remote-session/health', async (_req, res) => {
   const healthy = await isRemoteDesktopHealthy()
-  res.json({
-    ok: true,
-    healthy,
-    viewer_url: REMOTE_VIEWER_URL,
-  })
+  res.json({ ok: true, healthy, viewer_url: REMOTE_VIEWER_URL })
 })
 
 app.post('/remote-session/start', async (_req, res) => {
@@ -410,11 +337,12 @@ app.post('/bots/:id/start', async (req, res) => {
     pushLog(id, `🚀 Starting: ${bot.name}`)
     pushLog(id, `📋 Campaign: ${campaignId}`)
 
-    procs[id] = { ...(procs[id] || {}), proc: null, type: 'bot', campaignId }
-    const allocation = await allocateCampaignForToday(campaignId)
-    pushLog(id, `📊 Daily allocation prepared: ${allocation.allocated} post(s) across ${allocation.activeBotIds.length} active bot(s)`)
-    if (allocation.shares?.[id] != null) {
-      pushLog(id, `🤖 This bot assigned ${allocation.shares[id]} post(s) for today on this campaign`)
+    const snapshot = await getCampaignSummary(campaignId)
+    if (snapshot.campaign) {
+      pushLog(
+        id,
+        `📈 Campaign snapshot — pending: ${snapshot.pendingCount}, processing: ${snapshot.processingCount}, posted: ${snapshot.postedCount}, daily cap: ${snapshot.campaign.posts_per_day_limit}`
+      )
     }
 
     const spawnBot = (cid) => {
