@@ -99,19 +99,51 @@ export function useCampaigns() {
 
     if (ce) throw new Error(ce.message)
 
-    const pendingItems = queueItems.map(item => ({
-      campaign_id: campaign.id,
-      property_id: item.property_id,
-      group_id: item.group_id,
-      duplicate_warned: item.duplicate_warned || false,
-      status: 'pending',
-      assigned_bot_id: null,
-      claimed_at: null,
-      scheduled_at: null,
-    }))
+    const MIN_GAP = 8
+    const MAX_GAP = 22
+    const scheduledItems = []
+    let cursor = new Date()
 
-    for (let i = 0; i < pendingItems.length; i += 100) {
-      const batch = pendingItems.slice(i, i + 100)
+    const h = cursor.getHours()
+    if (h < startHour) cursor.setHours(startHour, 0, 0, 0)
+    if (h >= endHour) {
+      cursor.setDate(cursor.getDate() + 1)
+      cursor.setHours(startHour, 0, 0, 0)
+    }
+
+    let postsToday = 0
+
+    for (let i = 0; i < queueItems.length; i++) {
+      scheduledItems.push({
+        campaign_id: campaign.id,
+        property_id: queueItems[i].property_id,
+        group_id: queueItems[i].group_id,
+        scheduled_at: cursor.toISOString(),
+        duplicate_warned: queueItems[i].duplicate_warned || false,
+        status: 'pending',
+      })
+
+      postsToday++
+
+      if (postsToday >= postsPerDay) {
+        cursor = new Date(cursor)
+        cursor.setDate(cursor.getDate() + 1)
+        cursor.setHours(startHour, 0, 0, 0)
+        postsToday = 0
+      } else {
+        const gapMins = MIN_GAP + Math.random() * (MAX_GAP - MIN_GAP)
+        cursor = new Date(cursor.getTime() + gapMins * 60 * 1000)
+
+        if (cursor.getHours() >= endHour) {
+          cursor.setDate(cursor.getDate() + 1)
+          cursor.setHours(startHour, 0, 0, 0)
+          postsToday = 0
+        }
+      }
+    }
+
+    for (let i = 0; i < scheduledItems.length; i += 100) {
+      const batch = scheduledItems.slice(i, i + 100)
       const { error: qe } = await supabase.from('post_queue').insert(batch)
       if (qe) throw new Error(qe.message)
     }
@@ -126,7 +158,28 @@ export function useCampaigns() {
     setCampaigns(prev => prev.map(c => (c.id === id ? { ...c, status } : c)))
   }
 
+
+  const deleteCampaign = async (campaignId) => {
+    const { error: qError } = await supabase
+      .from('post_queue')
+      .delete()
+      .eq('campaign_id', campaignId)
+
+    if (qError) throw new Error(qError.message)
+
+    const { error: cError } = await supabase
+      .from('campaigns')
+      .delete()
+      .eq('id', campaignId)
+
+    if (cError) throw new Error(cError.message)
+
+    await fetch()
+  }
+
   const retryFailedPosts = async (campaignId) => {
+    const now = new Date().toISOString()
+
     const { error } = await supabase
       .from('post_queue')
       .update({
@@ -135,7 +188,7 @@ export function useCampaigns() {
         assigned_bot_id: null,
         claimed_at: null,
         posted_at: null,
-        scheduled_at: null,
+        scheduled_at: now,
       })
       .eq('campaign_id', campaignId)
       .eq('status', 'failed')
@@ -152,5 +205,6 @@ export function useCampaigns() {
     createCampaign,
     updateStatus,
     retryFailedPosts,
+    deleteCampaign,
   }
 }

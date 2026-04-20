@@ -3,7 +3,7 @@ import { useProperties } from '../hooks/useProperties'
 import { useGroups }     from '../hooks/useGroups'
 import { useCampaigns }  from '../hooks/useCampaigns'
 import { supabase }      from '../lib/supabase'
-import { useNavigate }   from 'react-router-dom'
+import { useNavigate, useLocation }   from 'react-router-dom'
 import {
   CheckSquare, Square, AlertTriangle, ChevronRight,
   Loader2, Search, MapPin
@@ -13,14 +13,23 @@ const STEPS = ['Select Listings', 'Select Groups', 'Review Queue', 'Settings & L
 
 export default function CampaignPage() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { properties } = useProperties()
   const { groups }     = useGroups()
   const { createCampaign } = useCampaigns()
+  const duplicateCampaign = location.state?.duplicateCampaign || null
 
-  const [step, setStep]             = useState(0)
-  const [selectedProps, setSelectedProps]   = useState(new Set())
-  const [selectedGroups, setSelectedGroups] = useState(new Set())
-  const [dupWarnings, setDupWarnings]       = useState({})
+  const [step, setStep]             = useState(duplicateCampaign ? 2 : 0)
+  const [selectedProps, setSelectedProps]   = useState(() => new Set(duplicateCampaign?.queueItems?.map(item => item.property_id) || []))
+  const [selectedGroups, setSelectedGroups] = useState(() => new Set(duplicateCampaign?.queueItems?.map(item => item.group_id) || []))
+  const [dupWarnings, setDupWarnings]       = useState(() => {
+    const map = {}
+    for (const item of duplicateCampaign?.queueItems || []) {
+      if (item.duplicate_warned) map[`${item.property_id}-${item.group_id}`] = true
+    }
+    return map
+  })
+
 
   // Filters
   const [propSearch,     setPropSearch]     = useState('')
@@ -29,11 +38,11 @@ export default function CampaignPage() {
   const [groupLocality,  setGroupLocality]  = useState('all')
 
   // Settings
-  const [notes,       setNotes]       = useState('')
-  const [postsPerDay, setPostsPerDay] = useState(18)
-  const [startHour,   setStartHour]   = useState(9)
-  const [endHour,     setEndHour]     = useState(20)
-  const [jitter,      setJitter]      = useState(false)
+  const [notes,       setNotes]       = useState(duplicateCampaign?.notes || '')
+  const [postsPerDay, setPostsPerDay] = useState(duplicateCampaign?.postsPerDay ?? 18)
+  const [startHour,   setStartHour]   = useState(duplicateCampaign?.startHour ?? 9)
+  const [endHour,     setEndHour]     = useState(duplicateCampaign?.endHour ?? 20)
+  const [jitter,      setJitter]      = useState(duplicateCampaign?.jitter ?? false)
   const [launching,   setLaunching]   = useState(false)
   const [error,       setError]       = useState('')
 
@@ -109,8 +118,10 @@ export default function CampaignPage() {
   return (
     <div className="p-8 fade-up">
       <div className="mb-8">
-        <h1 className="text-2xl font-semibold text-ink-100">New Campaign</h1>
-        <p className="text-sm text-ink-400 mt-0.5">Select listings and groups to build a posting queue</p>
+        <h1 className="text-2xl font-semibold text-ink-100">{duplicateCampaign ? 'Create Similar Campaign' : 'New Campaign'}</h1>
+        <p className="text-sm text-ink-400 mt-0.5">
+          {duplicateCampaign ? 'Review and launch a fresh campaign using the previous campaign details' : 'Select listings and groups to build a posting queue'}
+        </p>
       </div>
 
       {/* Step indicator */}
@@ -354,7 +365,11 @@ export default function CampaignPage() {
             <p className="text-xs text-ink-400">
               {queueItems.length} posts · {Math.ceil(queueItems.length / postsPerDay)} days estimated · {startHour}:00–{endHour}:00 window
             </p>
-            <p className="text-xs text-jade-500 mt-1">⚡ First post will execute immediately when bot starts</p>
+            {duplicateCampaign ? (
+              <p className="text-xs text-flame-400 mt-1">↺ Creating a fresh campaign from campaign {duplicateCampaign.sourceCampaignId?.slice(0, 8)}…</p>
+            ) : (
+              <p className="text-xs text-jade-500 mt-1">⚡ First post will execute immediately when bot starts</p>
+            )}
           </div>
 
           {error && <p className="text-sm text-flame-400 bg-flame-500/10 border border-flame-500/20 rounded-lg px-3 py-2 mb-4">{error}</p>}
@@ -362,7 +377,7 @@ export default function CampaignPage() {
           <div className="flex justify-between">
             <button className="btn-ghost" onClick={() => setStep(2)}>← Back</button>
             <button className="btn-primary" disabled={launching} onClick={launch}>
-              {launching ? <><Loader2 size={14} className="animate-spin"/> Launching…</> : '🚀 Launch Campaign'}
+              {launching ? <><Loader2 size={14} className="animate-spin"/> Launching…</> : duplicateCampaign ? '↺ Create Similar Campaign' : '🚀 Launch Campaign'}
             </button>
           </div>
         </div>

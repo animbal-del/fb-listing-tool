@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useCampaigns } from '../hooks/useCampaigns'
 import { supabase } from '../lib/supabase'
 import StatusBadge from '../components/StatusBadge'
@@ -7,7 +8,7 @@ import {
   Pause, Play, Download, RefreshCw, ChevronDown, ChevronUp,
   Copy, Check, Bot, Plus, Trash2, Eye, EyeOff, Edit2,
   LogIn, Square, Zap, AlertTriangle, Terminal,
-  CheckCircle, Wifi, WifiOff, Clock, XCircle, ImageOff, ListPlus
+  CheckCircle, Wifi, WifiOff, Clock, XCircle, ImageOff, ListPlus, CopyPlus
 } from 'lucide-react'
 
 const BOT_API = (import.meta.env.VITE_BOT_SERVER_URL || '/bot-api').replace(/\/$/, '')
@@ -268,7 +269,7 @@ function PostActivityLog({ items }) {
   )
 }
 
-function CampaignRow({ campaign, onToggle, onRetryFailed }) {
+function CampaignRow({ campaign, onToggle, onRetryFailed, onDelete, onDuplicate }) {
   const [expanded, setExpanded] = useState(false)
   const [retrying, setRetrying] = useState(false)
   const items = campaign.post_queue || []
@@ -345,6 +346,22 @@ function CampaignRow({ campaign, onToggle, onRetryFailed }) {
             )}
             <button onClick={exportCSV} className="btn-ghost py-1.5 text-xs">
               <Download size={13} /> Export
+            </button>
+            <button onClick={() => onDuplicate(campaign)} className="btn-ghost py-1.5 text-xs">
+              <CopyPlus size={13} /> Create Similar
+            </button>
+            <button
+              onClick={async () => {
+                if (!confirm('Delete this campaign and all of its queue items?')) return
+                try {
+                  await onDelete(campaign.id)
+                } catch (err) {
+                  alert(err.message || 'Could not delete campaign')
+                }
+              }}
+              className="btn-ghost py-1.5 text-xs text-flame-400 hover:text-flame-300"
+            >
+              <Trash2 size={13} /> Delete
             </button>
             <button onClick={() => setExpanded(e => !e)} className="btn-ghost py-1.5 text-xs">
               {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
@@ -1210,7 +1227,8 @@ function ServerBanner({ online }) {
 }
 
 export default function DashboardPage() {
-  const { campaigns, loading, refetch, updateStatus, retryFailedPosts } = useCampaigns()
+  const navigate = useNavigate()
+  const { campaigns, loading, refetch, updateStatus, retryFailedPosts, deleteCampaign } = useCampaigns()
   const [serverOnline, setServerOnline] = useState(false)
 
   useEffect(() => {
@@ -1232,6 +1250,36 @@ export default function DashboardPage() {
   const totalPosted = allItems.filter(q => q.status === 'posted').length
   const totalPending = allItems.filter(q => q.status === 'pending').length
   const totalFailed = allItems.filter(q => q.status === 'failed').length
+
+
+  const handleDelete = async (campaignId) => {
+    await deleteCampaign(campaignId)
+  }
+
+  const handleDuplicate = (campaign) => {
+    const items = campaign.post_queue || []
+    const queueItems = items
+      .map(item => ({
+        property_id: item.property_id || item.properties?.id,
+        group_id: item.group_id || item.groups?.id,
+        duplicate_warned: !!item.duplicate_warned,
+      }))
+      .filter(item => item.property_id && item.group_id)
+
+    navigate('/campaigns', {
+      state: {
+        duplicateCampaign: {
+          sourceCampaignId: campaign.id,
+          notes: campaign.notes || '',
+          postsPerDay: campaign.posts_per_day_limit ?? 18,
+          startHour: campaign.posting_start_hour ?? 9,
+          endHour: campaign.posting_end_hour ?? 20,
+          jitter: !!campaign.jitter_enabled,
+          queueItems,
+        },
+      },
+    })
+  }
 
   return (
     <div className="p-8 fade-up">
@@ -1280,6 +1328,8 @@ export default function DashboardPage() {
               campaign={c}
               onToggle={updateStatus}
               onRetryFailed={retryFailedPosts}
+              onDelete={handleDelete}
+              onDuplicate={handleDuplicate}
             />
           ))}
         </div>
