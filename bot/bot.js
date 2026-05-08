@@ -22,8 +22,11 @@ const CAMPAIGN_ID     = process.env.CAMPAIGN_ID
 // Old Supabase — campaigns, post_queue, bot_accounts, groups
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY)
 
-// Denner's Supabase — inventory_flats, inventory_flat_media, inventory_flat_intake
-const dennerSupabase = createClient(process.env.DENNER_SUPABASE_URL, process.env.DENNER_SUPABASE_KEY)
+// Denner's Supabase — use service role key so RLS is bypassed for inventory reads
+const dennerSupabase = createClient(
+  process.env.DENNER_SUPABASE_URL,
+  process.env.DENNER_SUPABASE_SERVICE_KEY || process.env.DENNER_SUPABASE_KEY
+)
 
 let STOP_REQUESTED = false
 let CURRENT_CONTEXT = null
@@ -89,11 +92,11 @@ async function fetchFlatForBot(propertyId) {
         .select('public_url, media_type, sort_order')
         .eq('flat_id', propertyId)
         .order('sort_order'),
-      // flat_raw_descriptions is a restricted view accessible to anon key
       dennerSupabase
-        .from('flat_raw_descriptions')
+        .from('inventory_flat_intake')
         .select('raw_description')
         .eq('linked_flat_id', propertyId)
+        .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle(),
     ])
