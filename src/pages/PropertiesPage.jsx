@@ -526,12 +526,10 @@ export default function PropertiesPage() {
                   {p.locality && <span>📍 {p.locality}</span>}
                 </div>
 
-                {/* Description snippet */}
-                {p.description && (
-                  <p className="text-xs text-ink-500 line-clamp-2 mb-2 leading-relaxed">
-                    {p.description}
-                  </p>
-                )}
+                {/* Description snippet — raw_description from intake, NA if absent */}
+                <p className="text-xs text-ink-500 line-clamp-2 mb-2 leading-relaxed">
+                  {p.description || <span className="italic text-ink-700">NA</span>}
+                </p>
 
                 {/* Rent / Deposit */}
                 <div className="flex flex-wrap gap-2 text-xs text-ink-300 mb-2">

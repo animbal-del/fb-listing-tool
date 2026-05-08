@@ -146,12 +146,11 @@ export default function PropertyForm({ initial = {}, onSave, onCancel }) {
       </div>
 
       <div>
-        <label className="label">Description / Post Body *</label>
+        <label className="label">Description / Post Body</label>
         <textarea
           className="input resize-none"
           rows={5}
-          required
-          placeholder="Full listing text that will be posted to Facebook groups…"
+          placeholder="Raw description from inventory intake (raw_description). Leave blank if not available."
           value={form.description}
           onChange={e => set('description', e.target.value)}
         />
