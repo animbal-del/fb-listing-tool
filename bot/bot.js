@@ -1164,7 +1164,8 @@ async function clickPost(page, uiProfile) {
 
 function buildText(item) {
   const p = item.properties
-  let t = p.description || p.title || ''
+  // description maps to raw_description from inventory_flat_intake — no title fallback
+  let t = p.description || ''
   t = t.replace(/\{phone\}/g, p.phone || '')
   t = t.replace(/\{whatsapp_link\}/g, p.whatsapp_link || '')
   t = t.replace(/\{locality\}/g, p.locality || '')
