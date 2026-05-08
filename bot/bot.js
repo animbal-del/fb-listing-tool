@@ -104,6 +104,15 @@ async function fetchFlatForBot(propertyId) {
     const media  = mediaRes.data  || []
     const intake = intakeRes.data || null
 
+    // Debug: always log intake result so we can diagnose RLS / view issues
+    if (intakeRes.error) {
+      console.log(`   ⚠️ intake query error for flat ${propertyId}: ${intakeRes.error.message}`)
+    } else if (!intake) {
+      console.log(`   ⚠️ intake query returned no row for flat ${propertyId} (view may not exist or no linked record)`)
+    } else {
+      console.log(`   ✅ intake found for flat ${propertyId}: ${String(intake.raw_description || '').slice(0, 60)}...`)
+    }
+
     const photos = media.filter(m => m.media_type === 'image').map(m => m.public_url)
     const videos = media.filter(m => m.media_type === 'video').map(m => m.public_url)
 
