@@ -136,16 +136,17 @@ async function main() {
     }
 
     let loggedIn = false
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 100; i++) {        // 5 minutes total
       await sleep(3000)
       const cookies = await context.cookies('https://www.facebook.com')
       if (cookies.some((c) => c.name === 'c_user') && cookies.some((c) => c.name === 'xs')) {
         loggedIn = true
         break
       }
-      if (i === 5) console.log('⏳ Waiting for login...')
-      if (i === 15) console.log('⏳ Still waiting... complete 2FA in the remote browser if needed')
-      if (i === 25) console.log('⏳ Last chance... 45 seconds remaining')
+      if (i === 5)  console.log('⏳ Waiting for login... complete any Facebook checkpoint in the browser')
+      if (i === 20) console.log('⏳ Still waiting... if stuck on login page, try refreshing and logging in again')
+      if (i === 40) console.log('⏳ Still waiting... 3 minutes elapsed')
+      if (i === 60) console.log('⏳ Still waiting... 4 minutes elapsed — last chance')
     }
 
     if (!loggedIn) {
