@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useProperties } from '../hooks/useProperties'
 import { dennerSupabase } from '../lib/dennerSupabase'
 import Modal from '../components/Modal'
@@ -208,6 +208,8 @@ function ImportPreviewModal({
   )
 }
 
+const PAGE_SIZE = 12
+
 export default function PropertiesPage() {
   const { properties, loading, create, update, remove, toggleStatus } = useProperties()
 
@@ -216,6 +218,7 @@ export default function PropertiesPage() {
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState(null)
   const [confirmDelete, setConfirm] = useState(null)
+  const [currentPage, setCurrentPage] = useState(1)
 
   const [importRows, setImportRows] = useState([])
   const [importErrors, setImportErrors] = useState([])
@@ -226,9 +229,10 @@ export default function PropertiesPage() {
 
   const filtered = useMemo(() => {
     return properties.filter((p) => {
-      const title = p.title?.toLowerCase() || ''
+      // title is society_name after normalization; search on that + locality
+      const title    = p.title?.toLowerCase() || ''
       const locality = p.locality?.toLowerCase() || ''
-      const query = search.toLowerCase()
+      const query    = search.toLowerCase()
 
       const matchSearch = !search || title.includes(query) || locality.includes(query)
       const matchStatus = filterStatus === 'all' || p.status === filterStatus
@@ -237,8 +241,17 @@ export default function PropertiesPage() {
     })
   }, [properties, search, filterStatus])
 
+  // Reset to first page whenever the filtered list changes
+  useEffect(() => { setCurrentPage(1) }, [filtered])
+
+  const totalPages   = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const paginated    = useMemo(
+    () => filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE),
+    [filtered, currentPage]
+  )
+
   const availableCount = properties.filter((p) => p.status === 'available').length
-  const rentedCount = properties.filter((p) => p.status === 'rented').length
+  const rentedCount    = properties.filter((p) => p.status === 'rented').length
 
   const closeAddModal = () => {
     setShowForm(false)
@@ -454,7 +467,7 @@ export default function PropertiesPage() {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {filtered.map((p) => (
+          {paginated.map((p) => (
             <div
               key={p.id}
               className="card overflow-hidden hover:border-ink-600 transition-colors group"
@@ -466,16 +479,29 @@ export default function PropertiesPage() {
                     alt={p.society_name}
                     className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                   />
+                ) : p.videos?.[0] ? (
+                  <video
+                    src={p.videos[0]}
+                    className="w-full h-full object-cover"
+                    muted
+                    playsInline
+                  />
                 ) : (
                   <div className="w-full h-full flex items-center justify-center flex-col gap-2">
                     <ImageOff size={24} className="text-ink-600" />
-                    <span className="text-[11px] text-ink-500">No photos yet</span>
+                    <span className="text-[11px] text-ink-500">No media yet</span>
                   </div>
                 )}
 
-                {p.photos?.length > 1 && (
+                {/* Total media count badge */}
+                {((p.photos?.length || 0) + (p.videos?.length || 0)) > 1 && (
                   <span className="absolute bottom-2 right-2 bg-ink-900/80 text-ink-300 text-xs px-2 py-0.5 rounded-full">
-                    +{p.photos.length - 1}
+                    +{(p.photos?.length || 0) + (p.videos?.length || 0) - 1}
+                  </span>
+                )}
+                {p.videos?.length > 0 && (
+                  <span className="absolute top-2 left-2 bg-ink-900/80 text-ink-300 text-[10px] px-1.5 py-0.5 rounded">
+                    🎥 {p.videos.length}
                   </span>
                 )}
               </div>
@@ -560,6 +586,57 @@ export default function PropertiesPage() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Pagination */}
+      {!loading && totalPages > 1 && (
+        <div className="flex items-center justify-between mt-6">
+          <p className="text-xs text-ink-500">
+            Showing {((currentPage - 1) * PAGE_SIZE) + 1}–{Math.min(currentPage * PAGE_SIZE, filtered.length)} of {filtered.length}
+          </p>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+              disabled={currentPage === 1}
+              className="px-3 py-1.5 text-xs rounded-lg border border-ink-700 text-ink-400 hover:border-ink-500 hover:text-ink-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              ← Prev
+            </button>
+
+            {Array.from({ length: totalPages }, (_, i) => i + 1)
+              .filter(n => n === 1 || n === totalPages || Math.abs(n - currentPage) <= 1)
+              .reduce((acc, n, idx, arr) => {
+                if (idx > 0 && n - arr[idx - 1] > 1) acc.push('…')
+                acc.push(n)
+                return acc
+              }, [])
+              .map((item, idx) =>
+                item === '…' ? (
+                  <span key={`ellipsis-${idx}`} className="px-2 text-xs text-ink-600">…</span>
+                ) : (
+                  <button
+                    key={item}
+                    onClick={() => setCurrentPage(item)}
+                    className={`w-8 h-8 text-xs rounded-lg border transition-colors ${
+                      currentPage === item
+                        ? 'bg-ink-700 border-ink-500 text-ink-100'
+                        : 'border-ink-700 text-ink-400 hover:border-ink-500 hover:text-ink-200'
+                    }`}
+                  >
+                    {item}
+                  </button>
+                )
+              )}
+
+            <button
+              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+              disabled={currentPage === totalPages}
+              className="px-3 py-1.5 text-xs rounded-lg border border-ink-700 text-ink-400 hover:border-ink-500 hover:text-ink-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              Next →
+            </button>
+          </div>
         </div>
       )}
 

@@ -19,13 +19,13 @@ const EMPTY = {
   status:        'available',
 }
 
-// When editing, build photo state from _media records
 function buildInitialPhotos(initial) {
   if (!initial?._media?.length) return []
   return initial._media.map(m => ({
     id:           m.id,
     url:          m.public_url,
     storage_path: m.storage_path,
+    media_type:   m.media_type || 'image',
   }))
 }
 
@@ -225,14 +225,28 @@ export default function PropertyForm({ initial = {}, onSave, onCancel }) {
       </div>
 
       <div>
-        <label className="label">Photos</label>
+        <label className="label">Photos & Videos</label>
         <div className="flex flex-wrap gap-3 mb-3">
           {form.photos.map(photo => (
             <div
               key={photo.storage_path}
               className="relative w-20 h-20 rounded-lg overflow-hidden border border-ink-700 group"
             >
-              <img src={photo.url} alt="" className="w-full h-full object-cover" />
+              {photo.media_type === 'video' ? (
+                <video
+                  src={photo.url}
+                  className="w-full h-full object-cover"
+                  muted
+                  playsInline
+                />
+              ) : (
+                <img src={photo.url} alt="" className="w-full h-full object-cover" />
+              )}
+              {photo.media_type === 'video' && (
+                <span className="absolute bottom-1 left-1 bg-ink-900/80 text-ink-300 text-[9px] px-1 rounded">
+                  VIDEO
+                </span>
+              )}
               <button
                 type="button"
                 onClick={() => removePhoto(photo)}
@@ -260,11 +274,12 @@ export default function PropertyForm({ initial = {}, onSave, onCancel }) {
               type="file"
               className="hidden"
               multiple
-              accept="image/*"
+              accept="image/*,video/*"
               onChange={handlePhotos}
             />
           </label>
         </div>
+        <p className="text-xs text-ink-600">Photos and videos are both supported.</p>
       </div>
 
       {error && (

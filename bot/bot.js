@@ -238,8 +238,9 @@ async function warmPhotoCache(campaignId) {
     for (const prop of toDownload) {
       if (STOP_REQUESTED) throw new Error('BOT_STOPPED')
 
-      for (let i = 0; i < Math.min(prop.photos.length, 4); i++) {
-        const url = prop.photos[i]
+      const mediaList = collectPropertyMedia(prop)
+      for (let i = 0; i < Math.min(mediaList.length, 6); i++) {
+        const url = mediaList[i]?.url
         if (!url) continue
 
         const localPath = getMediaPath(prop.id, i, url)
@@ -249,9 +250,9 @@ async function warmPhotoCache(campaignId) {
           const res = await fetch(url)
           if (!res.ok) throw new Error(`HTTP ${res.status}`)
           writeFileSync(localPath, Buffer.from(await res.arrayBuffer()))
-          console.log(`   ✅ Cached: ${localPath.split('/').pop()}`)
+          console.log(`   ✅ Cached: ${localPath.split('/').pop()} (${mediaList[i].type})`)
         } catch (e) {
-          console.log(`   ⚠️ Could not cache photo ${i + 1} for ${prop.id}: ${e.message}`)
+          console.log(`   ⚠️ Could not cache media ${i + 1} for ${prop.id}: ${e.message}`)
         }
       }
     }

@@ -3,37 +3,40 @@ import { dennerSupabase } from '../lib/dennerSupabase'
 import { deleteFromStorage } from '../lib/storage'
 
 function normalizeFlat(flat) {
-  const media  = (flat.inventory_flat_media  || []).filter(m => m.media_type === 'image').sort((a, b) => a.sort_order - b.sort_order)
-  const intake = (flat.inventory_flat_intake || [])[0] || null
+  const allMedia  = (flat.inventory_flat_media || []).sort((a, b) => a.sort_order - b.sort_order)
+  const images    = allMedia.filter(m => m.media_type === 'image')
+  const videos    = allMedia.filter(m => m.media_type === 'video')
+  const intake    = (flat.inventory_flat_intake || [])[0] || null
 
   const ownerNumber   = flat.owner_phone || flat.source_phone || ''
   const handlerNumber = flat.handler_whatsapp_number || ''
 
   return {
-    id:             flat.id,
-    title:          flat.title || '',
-    description:    intake?.raw_description || flat.description || '',
-    rent:           flat.monthly_rent,
-    deposit:        flat.deposit,
-    locality:       flat.locality || '',
-    city:           flat.city || '',
-    bhk:            flat.bhk || '',
-    society_name:   flat.society_name || '',
+    id:           flat.id,
+    // society_name is used as the display title everywhere (campaign builder, dashboard, cards)
+    title:        flat.society_name || flat.title || '',
+    society_name: flat.society_name || '',
+    // description comes ONLY from intake raw_description — never falls back to inventory_flats.description
+    description:  intake?.raw_description || '',
+    rent:         flat.monthly_rent,
+    deposit:      flat.deposit,
+    locality:     flat.locality || '',
+    city:         flat.city || '',
+    bhk:          flat.bhk || '',
 
-    // Labelled display fields
     owner_number:   ownerNumber,
     handler_number: handlerNumber,
-
-    // Aliases kept for PropertyForm field binding and bot buildText template vars
+    // Aliases for PropertyForm field binding and bot {phone}/{whatsapp_link} template vars
     phone:         ownerNumber,
     whatsapp_link: handlerNumber,
 
-    status:      flat.business_status || 'available',
-    photos:      media.map(m => m.public_url),
-    created_at:  flat.created_at,
-    updated_at:  flat.updated_at,
-    _media:      media,
-    _intake_id:  intake?.id || null,
+    status:     flat.business_status || 'available',
+    photos:     images.map(m => m.public_url),
+    videos:     videos.map(m => m.public_url),
+    created_at: flat.created_at,
+    updated_at: flat.updated_at,
+    _media:     allMedia,   // all media (images + videos) for PropertyForm
+    _intake_id: intake?.id || null,
   }
 }
 
@@ -119,11 +122,11 @@ export function useProperties() {
     if (photos.length) {
       const mediaInserts = photos.map((p, i) => ({
         flat_id:      flatId,
-        media_type:   'image',
+        media_type:   p.media_type || 'image',
         storage_path: p.storage_path,
         public_url:   p.url,
         sort_order:   i,
-        is_cover:     i === 0,
+        is_cover:     i === 0 && p.media_type !== 'video',
       }))
       const { error: mediaErr } = await dennerSupabase.from('inventory_flat_media').insert(mediaInserts)
       if (mediaErr) console.error('media insert error:', mediaErr.message)
@@ -185,7 +188,7 @@ export function useProperties() {
 
       const inserts = newPhotos.map((p, i) => ({
         flat_id:      id,
-        media_type:   'image',
+        media_type:   p.media_type || 'image',
         storage_path: p.storage_path,
         public_url:   p.url,
         sort_order:   baseOrder + 1 + i,
