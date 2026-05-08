@@ -6,13 +6,13 @@ function normalizeFlat(flat) {
   const media  = (flat.inventory_flat_media  || []).filter(m => m.media_type === 'image').sort((a, b) => a.sort_order - b.sort_order)
   const intake = (flat.inventory_flat_intake || [])[0] || null
 
-  const ownerNumber   = flat.source_phone || flat.owner_phone || ''
+  const ownerNumber   = flat.owner_phone || flat.source_phone || ''
   const handlerNumber = flat.handler_whatsapp_number || ''
 
   return {
     id:             flat.id,
     title:          flat.title || '',
-    description:    intake?.raw_description || '',
+    description:    intake?.raw_description || flat.description || '',
     rent:           flat.monthly_rent,
     deposit:        flat.deposit,
     locality:       flat.locality || '',
@@ -49,11 +49,11 @@ export function useProperties() {
       const { data, error: err } = await dennerSupabase
         .from('inventory_flats')
         .select(`
-          id, title, monthly_rent, deposit, locality, city, bhk, society_name,
+          id, title, description, monthly_rent, deposit, locality, city, bhk, society_name,
           owner_phone, source_phone, handler_whatsapp_number, business_status,
           created_at, updated_at,
           inventory_flat_media ( id, storage_path, public_url, sort_order, media_type, is_cover ),
-          inventory_flat_intake ( id, raw_description )
+          inventory_flat_intake!inventory_flat_intake_linked_flat_id_fkey ( id, raw_description )
         `)
         .order('created_at', { ascending: false })
 
@@ -81,7 +81,7 @@ export function useProperties() {
     const { data: flat, error: flatErr } = await dennerSupabase
       .from('inventory_flats')
       .insert([{
-        title:                   fields.title,
+        title:                   fields.society_name,
         society_name:            fields.society_name,
         bhk:                     fields.bhk,
         city:                    fields.city,
@@ -139,7 +139,7 @@ export function useProperties() {
     const { error: flatErr } = await dennerSupabase
       .from('inventory_flats')
       .update({
-        title:                   fields.title,
+        title:                   fields.society_name,
         society_name:            fields.society_name,
         bhk:                     fields.bhk,
         city:                    fields.city,

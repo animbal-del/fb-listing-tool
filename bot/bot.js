@@ -114,7 +114,7 @@ async function fetchFlatForBot(propertyId) {
       rent:          flat.monthly_rent,
       deposit:       flat.deposit,
       locality:      flat.locality,
-      phone:         flat.source_phone || flat.owner_phone || '',
+      phone:         flat.owner_phone || flat.source_phone || '',
       whatsapp_link: flat.handler_whatsapp_number || '',
       photos,
       videos,

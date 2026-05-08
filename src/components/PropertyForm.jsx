@@ -6,7 +6,6 @@ import { ImagePlus, X, Loader2 } from 'lucide-react'
 const BHK_OPTIONS = ['1RK', '1BHK', '2BHK', '3BHK', '4BHK', '5BHK+']
 
 const EMPTY = {
-  title:         '',
   description:   '',
   society_name:  '',
   bhk:           '',
@@ -96,30 +95,34 @@ export default function PropertyForm({ initial = {}, onSave, onCancel }) {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5 max-w-3xl mx-auto w-full">
-      <div>
-        <label className="label">Listing Title *</label>
-        <input
-          className="input"
-          placeholder="e.g. 2BHK Bandra West — Furnished"
-          required
-          value={form.title}
-          onChange={e => set('title', e.target.value)}
-        />
-      </div>
-
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="md:col-span-2">
+          <label className="label">Society / Building Name *</label>
+          <input
+            className="input"
+            placeholder="e.g. Shree Apartments"
+            required
+            value={form.society_name}
+            onChange={e => set('society_name', e.target.value)}
+          />
+        </div>
         <div>
           <label className="label">BHK *</label>
-          <select
+          <input
             className="input"
+            list="bhk-suggestions"
+            placeholder="e.g. 2BHK"
             required
             value={form.bhk}
             onChange={e => set('bhk', e.target.value)}
-          >
-            <option value="">Select…</option>
-            {BHK_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
-          </select>
+          />
+          <datalist id="bhk-suggestions">
+            {BHK_OPTIONS.map(o => <option key={o} value={o} />)}
+          </datalist>
         </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
           <label className="label">City *</label>
           <input
@@ -131,13 +134,13 @@ export default function PropertyForm({ initial = {}, onSave, onCancel }) {
           />
         </div>
         <div>
-          <label className="label">Society / Building Name *</label>
+          <label className="label">Locality *</label>
           <input
             className="input"
-            placeholder="e.g. Shree Apartments"
+            placeholder="e.g. Bandra West"
             required
-            value={form.society_name}
-            onChange={e => set('society_name', e.target.value)}
+            value={form.locality}
+            onChange={e => set('locality', e.target.value)}
           />
         </div>
       </div>
@@ -176,17 +179,6 @@ export default function PropertyForm({ initial = {}, onSave, onCancel }) {
             onChange={e => set('deposit', e.target.value)}
           />
         </div>
-      </div>
-
-      <div>
-        <label className="label">Locality *</label>
-        <input
-          className="input"
-          placeholder="e.g. Bandra West"
-          required
-          value={form.locality}
-          onChange={e => set('locality', e.target.value)}
-        />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
