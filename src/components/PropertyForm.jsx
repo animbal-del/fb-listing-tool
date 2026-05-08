@@ -1,26 +1,48 @@
 import { useState } from 'react'
-import { uploadPhotos, deletePhoto } from '../lib/storage'
+import { uploadToStorage, deleteFromStorage } from '../lib/storage'
+import { dennerSupabase } from '../lib/dennerSupabase'
 import { ImagePlus, X, Loader2 } from 'lucide-react'
 
+const BHK_OPTIONS = ['1RK', '1BHK', '2BHK', '3BHK', '4BHK', '5BHK+']
+
 const EMPTY = {
-  title: '',
-  description: '',
-  rent: '',
-  deposit: '',
-  locality: '',
-  phone: '',
+  title:         '',
+  description:   '',
+  society_name:  '',
+  bhk:           '',
+  city:          '',
+  rent:          '',
+  deposit:       '',
+  locality:      '',
+  phone:         '',
   whatsapp_link: '',
-  photos: [],
-  status: 'available'
+  photos:        [],   // [{url, storage_path, id?}]
+  status:        'available',
+}
+
+// When editing, build photo state from _media records
+function buildInitialPhotos(initial) {
+  if (!initial?._media?.length) return []
+  return initial._media.map(m => ({
+    id:           m.id,
+    url:          m.public_url,
+    storage_path: m.storage_path,
+  }))
 }
 
 export default function PropertyForm({ initial = {}, onSave, onCancel }) {
-  const [form, setForm] = useState({ ...EMPTY, ...initial })
-  const [uploading, setUploading] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
+  const initPhotos = buildInitialPhotos(initial)
 
-  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }))
+  const [form, setForm] = useState({
+    ...EMPTY,
+    ...initial,
+    photos: initPhotos,
+  })
+  const [uploading, setUploading] = useState(false)
+  const [saving,    setSaving]    = useState(false)
+  const [error,     setError]     = useState('')
+
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
   const handlePhotos = async (e) => {
     const files = Array.from(e.target.files || [])
@@ -28,9 +50,12 @@ export default function PropertyForm({ initial = {}, onSave, onCancel }) {
 
     setUploading(true)
     try {
-      const tempId = initial.id || `temp-${Date.now()}`
-      const urls = await uploadPhotos(files, tempId)
-      setForm((f) => ({ ...f, photos: [...(f.photos || []), ...urls] }))
+      const uploaded = []
+      for (const file of files) {
+        const result = await uploadToStorage(file)
+        uploaded.push(result)
+      }
+      setForm(f => ({ ...f, photos: [...f.photos, ...uploaded] }))
     } catch (err) {
       setError('Photo upload failed: ' + err.message)
     } finally {
@@ -39,24 +64,26 @@ export default function PropertyForm({ initial = {}, onSave, onCancel }) {
     }
   }
 
-  const removePhoto = async (url) => {
+  const removePhoto = async (photo) => {
     try {
-      await deletePhoto(url)
-      setForm((f) => ({ ...f, photos: f.photos.filter((p) => p !== url) }))
+      if (photo.id) {
+        await dennerSupabase.from('inventory_flat_media').delete().eq('id', photo.id)
+      }
+      await deleteFromStorage(photo.storage_path)
     } catch {
-      setForm((f) => ({ ...f, photos: f.photos.filter((p) => p !== url) }))
+      // proceed even if cleanup fails
     }
+    setForm(f => ({ ...f, photos: f.photos.filter(p => p.storage_path !== photo.storage_path) }))
   }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
     setSaving(true)
-
     try {
       const payload = {
         ...form,
-        rent: form.rent ? parseInt(form.rent) : null,
+        rent:    form.rent    ? parseInt(form.rent)    : null,
         deposit: form.deposit ? parseInt(form.deposit) : null,
       }
       await onSave(payload)
@@ -76,8 +103,43 @@ export default function PropertyForm({ initial = {}, onSave, onCancel }) {
           placeholder="e.g. 2BHK Bandra West — Furnished"
           required
           value={form.title}
-          onChange={(e) => set('title', e.target.value)}
+          onChange={e => set('title', e.target.value)}
         />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div>
+          <label className="label">BHK *</label>
+          <select
+            className="input"
+            required
+            value={form.bhk}
+            onChange={e => set('bhk', e.target.value)}
+          >
+            <option value="">Select…</option>
+            {BHK_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="label">City *</label>
+          <input
+            className="input"
+            placeholder="e.g. Mumbai"
+            required
+            value={form.city}
+            onChange={e => set('city', e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="label">Society / Building Name *</label>
+          <input
+            className="input"
+            placeholder="e.g. Shree Apartments"
+            required
+            value={form.society_name}
+            onChange={e => set('society_name', e.target.value)}
+          />
+        </div>
       </div>
 
       <div>
@@ -88,7 +150,7 @@ export default function PropertyForm({ initial = {}, onSave, onCancel }) {
           required
           placeholder="Full listing text that will be posted to Facebook groups…"
           value={form.description}
-          onChange={(e) => set('description', e.target.value)}
+          onChange={e => set('description', e.target.value)}
         />
         <p className="text-xs text-ink-500 mt-1">{form.description.length} chars</p>
       </div>
@@ -101,7 +163,7 @@ export default function PropertyForm({ initial = {}, onSave, onCancel }) {
             type="number"
             placeholder="45000"
             value={form.rent}
-            onChange={(e) => set('rent', e.target.value)}
+            onChange={e => set('rent', e.target.value)}
           />
         </div>
         <div>
@@ -111,18 +173,19 @@ export default function PropertyForm({ initial = {}, onSave, onCancel }) {
             type="number"
             placeholder="90000"
             value={form.deposit}
-            onChange={(e) => set('deposit', e.target.value)}
+            onChange={e => set('deposit', e.target.value)}
           />
         </div>
       </div>
 
       <div>
-        <label className="label">Locality</label>
+        <label className="label">Locality *</label>
         <input
           className="input"
           placeholder="e.g. Bandra West"
+          required
           value={form.locality}
-          onChange={(e) => set('locality', e.target.value)}
+          onChange={e => set('locality', e.target.value)}
         />
       </div>
 
@@ -133,16 +196,16 @@ export default function PropertyForm({ initial = {}, onSave, onCancel }) {
             className="input"
             placeholder="+91 98201 00000"
             value={form.phone}
-            onChange={(e) => set('phone', e.target.value)}
+            onChange={e => set('phone', e.target.value)}
           />
         </div>
         <div>
-          <label className="label">WhatsApp Link</label>
+          <label className="label">WhatsApp Number</label>
           <input
             className="input"
-            placeholder="https://wa.me/91982010000"
+            placeholder="+919820100000"
             value={form.whatsapp_link}
-            onChange={(e) => set('whatsapp_link', e.target.value)}
+            onChange={e => set('whatsapp_link', e.target.value)}
           />
         </div>
       </div>
@@ -150,7 +213,7 @@ export default function PropertyForm({ initial = {}, onSave, onCancel }) {
       <div>
         <label className="label">Status</label>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          {['available', 'rented'].map((s) => (
+          {['available', 'rented'].map(s => (
             <button
               key={s}
               type="button"
@@ -172,15 +235,15 @@ export default function PropertyForm({ initial = {}, onSave, onCancel }) {
       <div>
         <label className="label">Photos</label>
         <div className="flex flex-wrap gap-3 mb-3">
-          {form.photos.map((url) => (
+          {form.photos.map(photo => (
             <div
-              key={url}
+              key={photo.storage_path}
               className="relative w-20 h-20 rounded-lg overflow-hidden border border-ink-700 group"
             >
-              <img src={url} alt="" className="w-full h-full object-cover" />
+              <img src={photo.url} alt="" className="w-full h-full object-cover" />
               <button
                 type="button"
-                onClick={() => removePhoto(url)}
+                onClick={() => removePhoto(photo)}
                 className="absolute inset-0 bg-ink-900/70 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
               >
                 <X size={16} className="text-white" />
@@ -225,9 +288,7 @@ export default function PropertyForm({ initial = {}, onSave, onCancel }) {
           disabled={saving || uploading}
         >
           {saving ? (
-            <>
-              <Loader2 size={14} className="animate-spin" /> Saving…
-            </>
+            <><Loader2 size={14} className="animate-spin" /> Saving…</>
           ) : (
             'Save Property'
           )}

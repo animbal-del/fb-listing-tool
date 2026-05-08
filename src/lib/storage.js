@@ -1,32 +1,17 @@
-import { supabase } from './supabase'
+import { dennerSupabase } from './dennerSupabase'
 
-const BUCKET = 'property-photos'
+const BUCKET = import.meta.env.VITE_DENNER_STORAGE_BUCKET || 'flat-media'
 
-/**
- * Upload an array of File objects to Supabase Storage.
- * Returns array of public URLs.
- */
-export async function uploadPhotos(files, propertyId) {
-  const urls = []
-  for (const file of files) {
-    const ext  = file.name.split('.').pop()
-    const path = `${propertyId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
-    const { error } = await supabase.storage.from(BUCKET).upload(path, file, { upsert: false })
-    if (error) throw error
-    const { data } = supabase.storage.from(BUCKET).getPublicUrl(path)
-    urls.push(data.publicUrl)
-  }
-  return urls
+export async function uploadToStorage(file) {
+  const ext  = file.name.split('.').pop()
+  const path = `uploads/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
+  const { error } = await dennerSupabase.storage.from(BUCKET).upload(path, file, { upsert: false })
+  if (error) throw error
+  const { data } = dennerSupabase.storage.from(BUCKET).getPublicUrl(path)
+  return { storage_path: path, url: data.publicUrl }
 }
 
-/**
- * Delete a photo by its full public URL.
- */
-export async function deletePhoto(publicUrl) {
-  // Extract path from URL: everything after /property-photos/
-  const marker = `/${BUCKET}/`
-  const idx    = publicUrl.indexOf(marker)
-  if (idx === -1) return
-  const path = publicUrl.slice(idx + marker.length)
-  await supabase.storage.from(BUCKET).remove([path])
+export async function deleteFromStorage(storagePath) {
+  if (!storagePath) return
+  await dennerSupabase.storage.from(BUCKET).remove([storagePath])
 }

@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import { useProperties } from '../hooks/useProperties'
-import { supabase } from '../lib/supabase'
+import { dennerSupabase } from '../lib/dennerSupabase'
 import Modal from '../components/Modal'
 import PropertyForm from '../components/PropertyForm'
 import StatusBadge from '../components/StatusBadge'
@@ -76,23 +76,30 @@ function normalizeImportedProperty(row) {
   const status = statusValue === 'rented' ? 'rented' : 'available'
 
   return {
-    title: (row.title || '').trim(),
-    description: (row.description || '').trim() || null,
-    rent: row.rent ? Number(row.rent) : null,
-    deposit: row.deposit ? Number(row.deposit) : null,
-    locality: (row.locality || '').trim() || null,
-    phone: (row.phone || '').trim() || null,
-    whatsapp_link: (row.whatsapp_link || '').trim() || null,
-    status,
-    photos: [],
+    title:                   (row.title        || '').trim(),
+    society_name:            (row.society_name || row.title || '').trim(),
+    bhk:                     (row.bhk          || '').trim() || '1BHK',
+    city:                    (row.city         || '').trim() || 'Unknown',
+    locality:                (row.locality     || '').trim() || 'Unknown',
+    monthly_rent:            row.rent    ? Number(row.rent)    : 0,
+    deposit:                 row.deposit ? Number(row.deposit) : 0,
+    owner_phone:             (row.phone         || '').trim() || null,
+    handler_whatsapp_number: (row.whatsapp_link || '').trim() || null,
+    business_status:         status,
+    source_channel:          'admin_manual',
+    source_type:             'admin',
+    listing_status:          'draft',
+    review_status:           'pending_review',
+    visibility_status:       'private',
+    _raw_description:        (row.description  || '').trim() || null,
   }
 }
 
 function downloadSampleCsv() {
   const csv = [
-    'title,description,rent,deposit,locality,phone,whatsapp_link,status',
-    '"1BHK Flat in Kharadi","Fully furnished near EON IT Park",25000,50000,"Kharadi","9156005618","https://wa.me/919156005618","available"',
-    '"2BHK Flat in Wakad","Semi-furnished family flat",32000,70000,"Wakad","9156005618","https://wa.me/919156005618","available"',
+    'title,description,bhk,city,society_name,rent,deposit,locality,phone,whatsapp_link,status',
+    '"1BHK Flat in Kharadi","Fully furnished near EON IT Park","1BHK","Pune","EON Residency",25000,50000,"Kharadi","9156005618","9156005618","available"',
+    '"2BHK Flat in Wakad","Semi-furnished family flat","2BHK","Pune","Wakad Heights",32000,70000,"Wakad","9156005618","9156005618","available"',
   ].join('\n')
 
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
@@ -319,8 +326,26 @@ export default function PropertiesPage() {
 
     setImporting(true)
     try {
-      const { error } = await supabase.from('properties').insert(importRows)
-      if (error) throw error
+      for (const row of importRows) {
+        const { _raw_description, ...flatFields } = row
+
+        const { data: flat, error: flatErr } = await dennerSupabase
+          .from('inventory_flats')
+          .insert([flatFields])
+          .select('id')
+          .single()
+
+        if (flatErr) throw flatErr
+
+        if (_raw_description) {
+          await dennerSupabase.from('inventory_flat_intake').insert([{
+            linked_flat_id:  flat.id,
+            raw_description: _raw_description,
+            intake_mode:     'quick_paste',
+            intake_status:   'pending',
+          }])
+        }
+      }
 
       setShowImportModal(false)
       setImportRows([])

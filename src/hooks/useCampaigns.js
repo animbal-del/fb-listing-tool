@@ -1,9 +1,43 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
+import { dennerSupabase } from '../lib/dennerSupabase'
+
+async function fetchPropertyMap(propertyIds) {
+  if (!propertyIds.length) return new Map()
+
+  const { data: flats, error } = await dennerSupabase
+    .from('inventory_flats')
+    .select(`
+      id, title, locality,
+      inventory_flat_media ( public_url, sort_order, media_type, is_cover )
+    `)
+    .in('id', propertyIds)
+
+  if (error) {
+    console.error('fetchPropertyMap error:', error.message)
+    return new Map()
+  }
+
+  const map = new Map()
+  for (const flat of flats || []) {
+    const photos = (flat.inventory_flat_media || [])
+      .filter(m => m.media_type === 'image')
+      .sort((a, b) => a.sort_order - b.sort_order)
+      .map(m => m.public_url)
+
+    map.set(flat.id, {
+      id:       flat.id,
+      title:    flat.title,
+      locality: flat.locality,
+      photos,
+    })
+  }
+  return map
+}
 
 export function useCampaigns() {
   const [campaigns, setCampaigns] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading]     = useState(true)
 
   const fetch = useCallback(async () => {
     setLoading(true)
@@ -23,7 +57,6 @@ export function useCampaigns() {
             assigned_bot_id,
             claimed_at,
             duplicate_warned,
-            properties ( id, title, locality, photos ),
             groups ( id, name, fb_url )
           )
         `)
@@ -35,6 +68,19 @@ export function useCampaigns() {
         return
       }
 
+      // Collect unique bigint property IDs across all campaigns
+      const propertyIds = [
+        ...new Set(
+          (data || [])
+            .flatMap(c => c.post_queue || [])
+            .map(q => q.property_id)
+            .filter(Boolean)
+        ),
+      ]
+
+      const propertyMap = await fetchPropertyMap(propertyIds)
+
+      // Bot name lookup (still on old Supabase)
       const botIds = [
         ...new Set(
           (data || [])
@@ -45,7 +91,6 @@ export function useCampaigns() {
       ]
 
       let botNameMap = new Map()
-
       if (botIds.length > 0) {
         const { data: bots, error: botError } = await supabase
           .from('bot_accounts')
@@ -63,6 +108,7 @@ export function useCampaigns() {
         ...campaign,
         post_queue: (campaign.post_queue || []).map(item => ({
           ...item,
+          properties:      propertyMap.get(item.property_id) || null,
           assigned_bot_name: item.assigned_bot_id
             ? botNameMap.get(item.assigned_bot_id) || null
             : null,
@@ -87,12 +133,12 @@ export function useCampaigns() {
       .from('campaigns')
       .insert([{
         notes,
-        total_posts: queueItems.length,
-        posts_per_day_limit: postsPerDay,
-        posting_start_hour: startHour,
-        posting_end_hour: endHour,
-        jitter_enabled: jitter,
-        status: 'active',
+        total_posts:          queueItems.length,
+        posts_per_day_limit:  postsPerDay,
+        posting_start_hour:   startHour,
+        posting_end_hour:     endHour,
+        jitter_enabled:       jitter,
+        status:               'active',
       }])
       .select()
       .single()
@@ -115,12 +161,12 @@ export function useCampaigns() {
 
     for (let i = 0; i < queueItems.length; i++) {
       scheduledItems.push({
-        campaign_id: campaign.id,
-        property_id: queueItems[i].property_id,
-        group_id: queueItems[i].group_id,
-        scheduled_at: cursor.toISOString(),
+        campaign_id:      campaign.id,
+        property_id:      queueItems[i].property_id,
+        group_id:         queueItems[i].group_id,
+        scheduled_at:     cursor.toISOString(),
         duplicate_warned: queueItems[i].duplicate_warned || false,
-        status: 'pending',
+        status:           'pending',
       })
 
       postsToday++
@@ -158,7 +204,6 @@ export function useCampaigns() {
     setCampaigns(prev => prev.map(c => (c.id === id ? { ...c, status } : c)))
   }
 
-
   const deleteCampaign = async (campaignId) => {
     const { error: qError } = await supabase
       .from('post_queue')
@@ -183,12 +228,12 @@ export function useCampaigns() {
     const { error } = await supabase
       .from('post_queue')
       .update({
-        status: 'pending',
-        error_log: null,
+        status:        'pending',
+        error_log:     null,
         assigned_bot_id: null,
-        claimed_at: null,
-        posted_at: null,
-        scheduled_at: now,
+        claimed_at:    null,
+        posted_at:     null,
+        scheduled_at:  now,
       })
       .eq('campaign_id', campaignId)
       .eq('status', 'failed')
