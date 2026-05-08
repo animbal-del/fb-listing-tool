@@ -46,7 +46,7 @@ export function useProperties() {
     setLoading(true)
     setError(null)
     try {
-      // Step 1 — fetch flats + media
+      // ── Step 1: flats + media ──────────────────────────────
       const { data: flats, error: flatsErr } = await dennerSupabase
         .from('inventory_flats')
         .select(`
@@ -58,38 +58,60 @@ export function useProperties() {
         .order('created_at', { ascending: false })
 
       if (flatsErr) {
-        console.error('useProperties flats fetch error:', flatsErr)
+        console.error('[useProperties] flats error:', flatsErr.message)
         setError(flatsErr.message)
         setProperties([])
         return
       }
 
-      // Step 2 — fetch intake records in one separate query, keyed by linked_flat_id
-      const flatIds = (flats || []).map(f => f.id)
-      const intakeMap = new Map()
+      // ── Step 2: intake — two-pass to diagnose silently empty results ──
+      const intakeMap = new Map()  // String(linked_flat_id) → intake row
+      const flatIds = (flats || []).map(f => f.id).filter(Boolean)
 
       if (flatIds.length > 0) {
-        const { data: intakeRows, error: intakeErr } = await dennerSupabase
+        // Pass A: try to access the table at all (catches RLS blocking)
+        const { data: tableCheck, error: tableErr } = await dennerSupabase
           .from('inventory_flat_intake')
           .select('id, linked_flat_id, raw_description')
-          .in('linked_flat_id', flatIds)
-          .order('created_at', { ascending: false })
+          .limit(5)
 
-        if (intakeErr) {
-          console.error('useProperties intake fetch error:', intakeErr)
-        } else {
-          // Keep only the most recent intake record per flat
-          for (const row of (intakeRows || [])) {
-            if (!intakeMap.has(row.linked_flat_id)) {
-              intakeMap.set(row.linked_flat_id, row)
+        console.log('[useProperties] intake table check →',
+          tableErr ? `ERROR: ${tableErr.message}` : `${tableCheck?.length} row(s) visible to anon key`,
+          tableCheck?.slice(0, 2)
+        )
+
+        if (!tableErr && tableCheck?.length > 0) {
+          // Pass B: filtered query for our flat IDs
+          const { data: intakeRows, error: intakeErr } = await dennerSupabase
+            .from('inventory_flat_intake')
+            .select('id, linked_flat_id, raw_description')
+            .in('linked_flat_id', flatIds)
+            .order('created_at', { ascending: false })
+
+          console.log('[useProperties] intake filtered query →',
+            intakeErr ? `ERROR: ${intakeErr.message}` : `${intakeRows?.length} row(s) matched for ${flatIds.length} flat IDs`,
+            intakeRows?.slice(0, 2)
+          )
+
+          if (!intakeErr) {
+            for (const row of (intakeRows || [])) {
+              // String key avoids number/string type mismatch across JS engines
+              const key = String(row.linked_flat_id)
+              if (!intakeMap.has(key)) {
+                intakeMap.set(key, row)
+              }
             }
           }
         }
       }
 
-      setProperties((flats || []).map(flat => normalizeFlat(flat, intakeMap.get(flat.id) || null)))
+      console.log('[useProperties] intakeMap built —', intakeMap.size, 'entries')
+
+      setProperties(
+        (flats || []).map(flat => normalizeFlat(flat, intakeMap.get(String(flat.id)) || null))
+      )
     } catch (e) {
-      console.error('useProperties unexpected error:', e)
+      console.error('[useProperties] unexpected error:', e)
       setError(e.message)
       setProperties([])
     } finally {
