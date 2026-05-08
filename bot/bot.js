@@ -93,7 +93,6 @@ async function fetchFlatForBot(propertyId) {
         .from('inventory_flat_intake')
         .select('raw_description')
         .eq('linked_flat_id', propertyId)
-        .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle(),
     ])
