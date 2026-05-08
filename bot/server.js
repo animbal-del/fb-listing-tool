@@ -57,9 +57,22 @@ const botQueues = {}
 
 function pushLog(botId, line) {
   if (!procs[botId]) procs[botId] = { proc: null, type: null, logs: [], campaignId: null }
-  procs[botId].logs = [...(procs[botId].logs || []).slice(-299), line]
+
+  // Strip leading \r written by the countdown timer
+  const cleanLine = line.startsWith('\r') ? line.slice(1) : line
+
+  // Countdown lines are sent as a separate event type so the dashboard
+  // renders them as a single updating line instead of appending endlessly
+  if (cleanLine.startsWith('⏳ Time left before')) {
+    ;(logSubs[botId] || []).forEach(res => {
+      try { res.write(`data: ${JSON.stringify({ countdown: cleanLine })}\n\n`) } catch {}
+    })
+    return
+  }
+
+  procs[botId].logs = [...(procs[botId].logs || []).slice(-299), cleanLine]
   ;(logSubs[botId] || []).forEach(res => {
-    try { res.write(`data: ${JSON.stringify({ line })}\n\n`) } catch {}
+    try { res.write(`data: ${JSON.stringify({ line: cleanLine })}\n\n`) } catch {}
   })
 }
 

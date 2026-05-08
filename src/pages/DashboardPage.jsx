@@ -67,12 +67,13 @@ async function stopBot(id) {
   return await apiFetch(`/bots/${id}/stop`, { method: 'POST' })
 }
 
-function streamLogs(id, onLine) {
+function streamLogs(id, onLine, onCountdown) {
   const es = new EventSource(`${BOT_API}/bots/${id}/logs`)
   es.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data)
       if (data?.line) onLine(data.line)
+      if (data?.countdown && onCountdown) onCountdown(data.countdown)
     } catch {}
   }
   es.onerror = () => {
@@ -658,16 +659,22 @@ function BotFormInner({ initial, isEdit, onClose, onSaved }) {
 }
 
 function LogViewerModal({ open, bot, onClose }) {
-  const [lines, setLines] = useState([])
-  const stopRef = useRef(null)
+  const [lines, setLines]       = useState([])
+  const [countdown, setCountdown] = useState(null)
+  const stopRef   = useRef(null)
   const bottomRef = useRef(null)
 
   useEffect(() => {
     if (!open || !bot?.id) {
       setLines([])
+      setCountdown(null)
       return
     }
-    stopRef.current = streamLogs(bot.id, line => setLines(prev => [...prev.slice(-299), line]))
+    stopRef.current = streamLogs(
+      bot.id,
+      line => setLines(prev => [...prev.slice(-299), line]),
+      cd   => setCountdown(cd)
+    )
     return () => {
       stopRef.current?.()
       stopRef.current = null
@@ -693,7 +700,7 @@ function LogViewerModal({ open, bot, onClose }) {
     <Modal open={open} onClose={onClose} title={`Live Logs — ${bot.name}`} size="xl">
       <div>
         <div className="bg-ink-950 rounded-xl border border-ink-700 h-80 overflow-y-auto p-3 font-mono text-xs leading-relaxed">
-          {lines.length === 0 ? (
+          {lines.length === 0 && !countdown ? (
             <p className="text-ink-600 text-center mt-8">No log output yet.</p>
           ) : (
             lines.map((line, i) => (
@@ -702,11 +709,17 @@ function LogViewerModal({ open, bot, onClose }) {
               </div>
             ))
           )}
+          {/* Single updating countdown line — never appends, just replaces */}
+          {countdown && (
+            <div className="text-ink-500 py-0.5 sticky bottom-0 bg-ink-950">
+              {countdown}
+            </div>
+          )}
           <div ref={bottomRef} />
         </div>
         <div className="flex justify-between items-center mt-3">
           <p className="text-xs text-ink-600">{lines.length} lines · live</p>
-          <button onClick={() => setLines([])} className="btn-ghost py-1.5 text-xs">
+          <button onClick={() => { setLines([]); setCountdown(null) }} className="btn-ghost py-1.5 text-xs">
             Clear
           </button>
         </div>
