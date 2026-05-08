@@ -81,7 +81,7 @@ async function fetchFlatForBot(propertyId) {
     const [flatRes, mediaRes, intakeRes] = await Promise.all([
       dennerSupabase
         .from('inventory_flats')
-        .select('id, title, monthly_rent, deposit, locality, owner_phone, source_phone, handler_whatsapp_number')
+        .select('id, title, society_name, monthly_rent, deposit, locality, owner_phone, source_phone, handler_whatsapp_number')
         .eq('id', propertyId)
         .single(),
       dennerSupabase
@@ -89,8 +89,9 @@ async function fetchFlatForBot(propertyId) {
         .select('public_url, media_type, sort_order')
         .eq('flat_id', propertyId)
         .order('sort_order'),
+      // flat_raw_descriptions is a restricted view accessible to anon key
       dennerSupabase
-        .from('inventory_flat_intake')
+        .from('flat_raw_descriptions')
         .select('raw_description')
         .eq('linked_flat_id', propertyId)
         .limit(1)
@@ -106,10 +107,13 @@ async function fetchFlatForBot(propertyId) {
     const photos = media.filter(m => m.media_type === 'image').map(m => m.public_url)
     const videos = media.filter(m => m.media_type === 'video').map(m => m.public_url)
 
+    // Use society_name as display title (matches useProperties normalization)
+    const displayTitle = flat.society_name || flat.title || `Flat #${flat.id}`
+
     return {
       id:            flat.id,
-      title:         flat.title,
-      description:   intake?.raw_description || flat.title || '',
+      title:         displayTitle,
+      description:   intake?.raw_description || '',
       rent:          flat.monthly_rent,
       deposit:       flat.deposit,
       locality:      flat.locality,
@@ -852,6 +856,12 @@ async function postToGroup(page, item, uiProfile, isRetry = false) {
   const propId = item.properties?.id
   const media  = collectPropertyMedia(item.properties || {})
   const propLabel  = `"${item.properties?.title || propId}" → ${item.groups?.name}`
+
+  // Guard: skip post if there is no text to type
+  if (!text || text.trim().length < 5) {
+    logPostError('No post body — raw_description is empty or missing', propLabel)
+    return false
+  }
 
   try {
     if (STOP_REQUESTED) throw new Error('BOT_STOPPED')
