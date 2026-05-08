@@ -2,21 +2,19 @@ import { useState, useEffect, useCallback } from 'react'
 import { dennerSupabase } from '../lib/dennerSupabase'
 import { deleteFromStorage } from '../lib/storage'
 
-function normalizeFlat(flat) {
+// intake is fetched separately and passed in — not via a nested join
+function normalizeFlat(flat, intake = null) {
   const allMedia  = (flat.inventory_flat_media || []).sort((a, b) => a.sort_order - b.sort_order)
   const images    = allMedia.filter(m => m.media_type === 'image')
   const videos    = allMedia.filter(m => m.media_type === 'video')
-  const intake    = (flat.inventory_flat_intake || [])[0] || null
 
   const ownerNumber   = flat.owner_phone || flat.source_phone || ''
   const handlerNumber = flat.handler_whatsapp_number || ''
 
   return {
     id:           flat.id,
-    // society_name is used as the display title everywhere (campaign builder, dashboard, cards)
     title:        flat.society_name || flat.title || '',
     society_name: flat.society_name || '',
-    // description comes ONLY from intake raw_description — never falls back to inventory_flats.description
     description:  intake?.raw_description || '',
     rent:         flat.monthly_rent,
     deposit:      flat.deposit,
@@ -26,7 +24,6 @@ function normalizeFlat(flat) {
 
     owner_number:   ownerNumber,
     handler_number: handlerNumber,
-    // Aliases for PropertyForm field binding and bot {phone}/{whatsapp_link} template vars
     phone:         ownerNumber,
     whatsapp_link: handlerNumber,
 
@@ -35,7 +32,7 @@ function normalizeFlat(flat) {
     videos:     videos.map(m => m.public_url),
     created_at: flat.created_at,
     updated_at: flat.updated_at,
-    _media:     allMedia,   // all media (images + videos) for PropertyForm
+    _media:     allMedia,
     _intake_id: intake?.id || null,
   }
 }
@@ -49,24 +46,48 @@ export function useProperties() {
     setLoading(true)
     setError(null)
     try {
-      const { data, error: err } = await dennerSupabase
+      // Step 1 — fetch flats + media
+      const { data: flats, error: flatsErr } = await dennerSupabase
         .from('inventory_flats')
         .select(`
-          id, title, description, monthly_rent, deposit, locality, city, bhk, society_name,
+          id, title, monthly_rent, deposit, locality, city, bhk, society_name,
           owner_phone, source_phone, handler_whatsapp_number, business_status,
           created_at, updated_at,
-          inventory_flat_media ( id, storage_path, public_url, sort_order, media_type, is_cover ),
-          inventory_flat_intake!inventory_flat_intake_linked_flat_id_fkey ( id, raw_description )
+          inventory_flat_media ( id, storage_path, public_url, sort_order, media_type, is_cover )
         `)
         .order('created_at', { ascending: false })
 
-      if (err) {
-        console.error('useProperties fetch error:', err)
-        setError(err.message)
+      if (flatsErr) {
+        console.error('useProperties flats fetch error:', flatsErr)
+        setError(flatsErr.message)
         setProperties([])
-      } else {
-        setProperties((data ?? []).map(normalizeFlat))
+        return
       }
+
+      // Step 2 — fetch intake records in one separate query, keyed by linked_flat_id
+      const flatIds = (flats || []).map(f => f.id)
+      const intakeMap = new Map()
+
+      if (flatIds.length > 0) {
+        const { data: intakeRows, error: intakeErr } = await dennerSupabase
+          .from('inventory_flat_intake')
+          .select('id, linked_flat_id, raw_description')
+          .in('linked_flat_id', flatIds)
+          .order('created_at', { ascending: false })
+
+        if (intakeErr) {
+          console.error('useProperties intake fetch error:', intakeErr)
+        } else {
+          // Keep only the most recent intake record per flat
+          for (const row of (intakeRows || [])) {
+            if (!intakeMap.has(row.linked_flat_id)) {
+              intakeMap.set(row.linked_flat_id, row)
+            }
+          }
+        }
+      }
+
+      setProperties((flats || []).map(flat => normalizeFlat(flat, intakeMap.get(flat.id) || null)))
     } catch (e) {
       console.error('useProperties unexpected error:', e)
       setError(e.message)
