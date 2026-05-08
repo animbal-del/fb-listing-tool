@@ -81,7 +81,7 @@ async function fetchFlatForBot(propertyId) {
     const [flatRes, mediaRes, intakeRes] = await Promise.all([
       dennerSupabase
         .from('inventory_flats')
-        .select('id, title, monthly_rent, deposit, locality, owner_phone, handler_whatsapp_number')
+        .select('id, title, monthly_rent, deposit, locality, owner_phone, source_phone, handler_whatsapp_number')
         .eq('id', propertyId)
         .single(),
       dennerSupabase
@@ -114,8 +114,8 @@ async function fetchFlatForBot(propertyId) {
       rent:          flat.monthly_rent,
       deposit:       flat.deposit,
       locality:      flat.locality,
-      phone:         flat.owner_phone,
-      whatsapp_link: flat.handler_whatsapp_number,
+      phone:         flat.source_phone || flat.owner_phone || '',
+      whatsapp_link: flat.handler_whatsapp_number || '',
       photos,
       videos,
     }

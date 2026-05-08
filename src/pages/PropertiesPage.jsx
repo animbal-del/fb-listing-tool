@@ -463,7 +463,7 @@ export default function PropertiesPage() {
                 {p.photos?.[0] ? (
                   <img
                     src={p.photos[0]}
-                    alt={p.title}
+                    alt={p.society_name}
                     className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                   />
                 ) : (
@@ -481,21 +481,45 @@ export default function PropertiesPage() {
               </div>
 
               <div className="p-4">
-                <div className="flex items-start justify-between gap-2 mb-2">
-                  <h3 className="text-sm font-semibold text-ink-100 leading-snug line-clamp-2">
-                    {p.title}
+                {/* Title = Society Name */}
+                <div className="flex items-start justify-between gap-2 mb-1.5">
+                  <h3 className="text-sm font-semibold text-ink-100 leading-snug line-clamp-1">
+                    {p.society_name || p.title}
                   </h3>
                   <StatusBadge status={p.status} />
                 </div>
 
-                {p.locality && (
-                  <p className="text-xs text-ink-400 mb-2">📍 {p.locality}</p>
+                {/* Denner ID · BHK · Locality */}
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-ink-500 mb-2">
+                  <span className="font-mono text-ink-600">#{p.id}</span>
+                  {p.bhk && (
+                    <span className="bg-ink-700 text-ink-300 px-1.5 py-0.5 rounded text-[10px] font-medium">
+                      {p.bhk}
+                    </span>
+                  )}
+                  {p.locality && <span>📍 {p.locality}</span>}
+                </div>
+
+                {/* Description snippet */}
+                {p.description && (
+                  <p className="text-xs text-ink-500 line-clamp-2 mb-2 leading-relaxed">
+                    {p.description}
+                  </p>
                 )}
 
-                <div className="flex flex-wrap gap-2 text-xs text-ink-300 mb-3">
-                  {p.rent && <span>₹{Number(p.rent).toLocaleString()}/mo</span>}
-                  {p.deposit && <span>• Dep ₹{Number(p.deposit).toLocaleString()}</span>}
+                {/* Rent / Deposit */}
+                <div className="flex flex-wrap gap-2 text-xs text-ink-300 mb-2">
+                  {p.rent    && <span>₹{Number(p.rent).toLocaleString()}/mo</span>}
+                  {p.deposit && <span className="text-ink-500">• Dep ₹{Number(p.deposit).toLocaleString()}</span>}
                 </div>
+
+                {/* Phone numbers */}
+                {(p.owner_number || p.handler_number) && (
+                  <div className="flex flex-col gap-0.5 text-[11px] text-ink-500 mb-2">
+                    {p.owner_number   && <span>📞 Owner/Source: <span className="text-ink-400">{p.owner_number}</span></span>}
+                    {p.handler_number && <span>📱 Handler: <span className="text-ink-400">{p.handler_number}</span></span>}
+                  </div>
+                )}
 
                 <div className="flex items-center gap-2 pt-3 border-t border-ink-700">
                   <button

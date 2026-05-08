@@ -191,7 +191,7 @@ export default function PropertyForm({ initial = {}, onSave, onCancel }) {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
-          <label className="label">Phone</label>
+          <label className="label">Owner / Source Number</label>
           <input
             className="input"
             placeholder="+91 98201 00000"
@@ -200,7 +200,7 @@ export default function PropertyForm({ initial = {}, onSave, onCancel }) {
           />
         </div>
         <div>
-          <label className="label">WhatsApp Number</label>
+          <label className="label">Handler WhatsApp Number</label>
           <input
             className="input"
             placeholder="+919820100000"

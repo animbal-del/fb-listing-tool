@@ -3,8 +3,11 @@ import { dennerSupabase } from '../lib/dennerSupabase'
 import { deleteFromStorage } from '../lib/storage'
 
 function normalizeFlat(flat) {
-  const media   = (flat.inventory_flat_media   || []).filter(m => m.media_type === 'image').sort((a, b) => a.sort_order - b.sort_order)
-  const intake  = (flat.inventory_flat_intake  || [])[0] || null
+  const media  = (flat.inventory_flat_media  || []).filter(m => m.media_type === 'image').sort((a, b) => a.sort_order - b.sort_order)
+  const intake = (flat.inventory_flat_intake || [])[0] || null
+
+  const ownerNumber   = flat.source_phone || flat.owner_phone || ''
+  const handlerNumber = flat.handler_whatsapp_number || ''
 
   return {
     id:             flat.id,
@@ -16,15 +19,21 @@ function normalizeFlat(flat) {
     city:           flat.city || '',
     bhk:            flat.bhk || '',
     society_name:   flat.society_name || '',
-    phone:          flat.owner_phone || '',
-    whatsapp_link:  flat.handler_whatsapp_number || '',
-    status:         flat.business_status || 'available',
-    photos:         media.map(m => m.public_url),
-    created_at:     flat.created_at,
-    updated_at:     flat.updated_at,
-    // Internal — used by PropertyForm for editing/deletion
-    _media:   media,
-    _intake_id: intake?.id || null,
+
+    // Labelled display fields
+    owner_number:   ownerNumber,
+    handler_number: handlerNumber,
+
+    // Aliases kept for PropertyForm field binding and bot buildText template vars
+    phone:         ownerNumber,
+    whatsapp_link: handlerNumber,
+
+    status:      flat.business_status || 'available',
+    photos:      media.map(m => m.public_url),
+    created_at:  flat.created_at,
+    updated_at:  flat.updated_at,
+    _media:      media,
+    _intake_id:  intake?.id || null,
   }
 }
 
@@ -41,7 +50,7 @@ export function useProperties() {
         .from('inventory_flats')
         .select(`
           id, title, monthly_rent, deposit, locality, city, bhk, society_name,
-          owner_phone, handler_whatsapp_number, business_status,
+          owner_phone, source_phone, handler_whatsapp_number, business_status,
           created_at, updated_at,
           inventory_flat_media ( id, storage_path, public_url, sort_order, media_type, is_cover ),
           inventory_flat_intake ( id, raw_description )
