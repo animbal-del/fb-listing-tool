@@ -16,7 +16,7 @@ sleep 2
 fluxbox >/tmp/fluxbox.log 2>&1 &
 sleep 1
 
-x11vnc -display :99 -forever -shared -nopw -rfbport 5901 >/tmp/x11vnc.log 2>&1 &
+x11vnc -display :99 -forever -shared -nopw -noxdamage -repeat -rfbport 5901 >/tmp/x11vnc.log 2>&1 &
 sleep 1
 
 /usr/share/novnc/utils/novnc_proxy --vnc localhost:5901 --listen 6080 >/tmp/novnc.log 2>&1 &

@@ -104,8 +104,7 @@ async function main() {
       await page.keyboard.type(bot.fb_password, { delay: randomBetween(50, 100) })
       await sleep(randomBetween(500, 900))
 
-      const loginBtn = page.locator('[name="login"], button[type="submit"], input[type="submit"]').first()
-      await loginBtn.click()
+      await submitLogin(page)
       filled = true
       console.log('📧 Credentials submitted automatically')
     } catch (e) {
@@ -448,6 +447,42 @@ function sleep(ms) {
 }
 function randomBetween(min, max) {
   return Math.floor(min + Math.random() * (max - min))
+}
+
+async function submitLogin(page) {
+  const loginBtn = page.locator('[name="login"], button[type="submit"], input[type="submit"]').first()
+
+  try {
+    await loginBtn.waitFor({ state: 'visible', timeout: 5000 })
+    await loginBtn.scrollIntoViewIfNeeded()
+    await loginBtn.click({ timeout: 5000 })
+    return
+  } catch (e) {
+    console.log(`⚠️ Login button click failed, trying keyboard submit: ${e.message.split('\n')[0]}`)
+  }
+
+  try {
+    await page.keyboard.press('Enter')
+    await sleep(1000)
+    return
+  } catch (e) {
+    console.log(`⚠️ Keyboard submit failed, trying DOM submit: ${e.message.split('\n')[0]}`)
+  }
+
+  const submitted = await page.evaluate(() => {
+    const password = document.querySelector('input[type="password"], input[name="pass"]')
+    const form = password?.closest('form') || document.querySelector('form')
+    if (!form) return false
+
+    if (typeof form.requestSubmit === 'function') {
+      form.requestSubmit()
+    } else {
+      form.submit()
+    }
+    return true
+  })
+
+  if (!submitted) throw new Error('No login form found to submit')
 }
 
 main().catch((err) => {

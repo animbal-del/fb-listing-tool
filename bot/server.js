@@ -18,7 +18,7 @@ const PORT = process.env.PORT || 3001
 
 const REMOTE_VIEWER_URL =
   process.env.REMOTE_VIEWER_URL ||
-  'http://147.93.98.94:3001/browser/vnc.html?autoconnect=true&resize=remote&path=browser/websockify'
+  'http://147.93.98.94:3001/browser/vnc.html?autoconnect=true&reconnect=true&resize=scale&path=browser/websockify'
 
 app.use(cors({ origin: '*' }))
 app.use(express.json())
@@ -125,11 +125,26 @@ async function waitForRemoteDesktopReady(timeoutMs = 15000) {
   return false
 }
 
-async function startRemoteDesktop() {
-  const alreadyHealthy = await isRemoteDesktopHealthy()
+function viewerUrlForSession(sessionId = '') {
+  if (!sessionId) return REMOTE_VIEWER_URL
+
+  try {
+    const url = new URL(REMOTE_VIEWER_URL)
+    url.searchParams.set('session', sessionId)
+    return url.toString()
+  } catch {
+    const joiner = REMOTE_VIEWER_URL.includes('?') ? '&' : '?'
+    return `${REMOTE_VIEWER_URL}${joiner}session=${encodeURIComponent(sessionId)}`
+  }
+}
+
+async function startRemoteDesktop({ forceRestart = false } = {}) {
+  const alreadyHealthy = !forceRestart && await isRemoteDesktopHealthy()
   if (alreadyHealthy) {
     return { ok: true, viewer_url: REMOTE_VIEWER_URL, reused: true }
   }
+
+  if (forceRestart) await stopRemoteDesktop()
 
   runDetached('bash', [join(__dir, 'start-remote-login-session.sh')])
 
@@ -290,7 +305,8 @@ async function handleLoginRemote(req, res) {
 
     const sp = join(__dir, bot.session_file || `fb_session_${bot.id.slice(0, 8)}.json`)
 
-    const remote = await startRemoteDesktop()
+    const remote = await startRemoteDesktop({ forceRestart: true })
+    const viewerUrl = viewerUrlForSession(`${id}-${Date.now()}`)
 
     const env = {
       ...process.env,
@@ -300,7 +316,7 @@ async function handleLoginRemote(req, res) {
     }
 
     pushLog(id, `🔐 Opening remote login session for ${bot.name} (${bot.fb_email})`)
-    pushLog(id, `🖥️ Remote viewer: ${REMOTE_VIEWER_URL}`)
+    pushLog(id, `🖥️ Remote viewer: ${viewerUrl}`)
     pushLog(id, remote.reused ? '♻️ Reusing shared remote desktop' : '🆕 Started shared remote desktop')
 
     const proc = spawn('node', [join(__dir, 'login.js')], { env, cwd: __dir })
@@ -319,7 +335,7 @@ async function handleLoginRemote(req, res) {
       if (procs[id]) procs[id].proc = null
     })
 
-    res.json({ ok: true, viewer_url: REMOTE_VIEWER_URL, reused: !!remote.reused })
+    res.json({ ok: true, viewer_url: viewerUrl, reused: !!remote.reused })
   } catch (e) {
     console.error('/login error:', e.message)
     res.status(500).json({ error: e.message })
