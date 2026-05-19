@@ -3,7 +3,7 @@
 
 import { chromium } from 'playwright'
 import { createClient } from '@supabase/supabase-js'
-import { writeFileSync } from 'fs'
+import { existsSync, writeFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import 'dotenv/config'
@@ -32,6 +32,7 @@ async function main() {
 
   console.log(`\n🔐 Logging in ${bot.name} (${bot.fb_email})`)
   console.log(`🖥️ Remote display: ${process.env.DISPLAY}`)
+  await waitForDisplay(process.env.DISPLAY)
 
   const userDataDir = sessionFile.replace('.json', '_profile')
 
@@ -447,6 +448,21 @@ function sleep(ms) {
 }
 function randomBetween(min, max) {
   return Math.floor(min + Math.random() * (max - min))
+}
+
+async function waitForDisplay(display, timeoutMs = 15000) {
+  const match = String(display || '').match(/^:(\d+)/)
+  if (!match) return
+
+  const socketPath = `/tmp/.X11-unix/X${match[1]}`
+  const started = Date.now()
+
+  while (Date.now() - started < timeoutMs) {
+    if (existsSync(socketPath)) return
+    await sleep(250)
+  }
+
+  throw new Error(`X display ${display} is not ready; missing ${socketPath}`)
 }
 
 async function submitLogin(page) {

@@ -95,6 +95,14 @@ function runDetached(cmd, args = []) {
   proc.unref()
 }
 
+function runProcess(cmd, args = []) {
+  return new Promise((resolve) => {
+    const proc = spawn(cmd, args, { cwd: __dir, env: process.env })
+    proc.on('error', () => resolve(false))
+    proc.on('close', code => resolve(code === 0))
+  })
+}
+
 function httpGet(url, timeoutMs = 2500) {
   return new Promise((resolve, reject) => {
     const req = http.get(url, { timeout: timeoutMs }, res => {
@@ -157,11 +165,12 @@ async function startRemoteDesktop({ forceRestart = false } = {}) {
 }
 
 async function stopRemoteDesktop() {
-  try { spawn('pkill', ['-f', 'Xvfb :99']) } catch {}
-  try { spawn('pkill', ['-f', 'x11vnc.*5901']) } catch {}
-  try { spawn('pkill', ['-f', 'websockify.*6080']) } catch {}
-  try { spawn('pkill', ['-f', 'novnc_proxy.*6080']) } catch {}
-  try { spawn('pkill', ['-f', 'fluxbox']) } catch {}
+  await runProcess('pkill', ['-f', 'Xvfb :99'])
+  await runProcess('pkill', ['-f', 'x11vnc.*5901'])
+  await runProcess('pkill', ['-f', 'websockify.*6080'])
+  await runProcess('pkill', ['-f', 'novnc_proxy.*6080'])
+  await runProcess('pkill', ['-f', 'fluxbox'])
+  await sleep(1000)
   return { ok: true }
 }
 
