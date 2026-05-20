@@ -53,6 +53,7 @@ export function useCampaigns() {
             status,
             scheduled_at,
             posted_at,
+            post_url,
             error_log,
             assigned_bot_id,
             claimed_at,

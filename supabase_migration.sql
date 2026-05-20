@@ -7,6 +7,7 @@
 -- 1. Ensure helper columns exist
 alter table public.post_queue add column if not exists assigned_bot_id uuid;
 alter table public.post_queue add column if not exists claimed_at timestamptz;
+alter table public.post_queue add column if not exists post_url text;
 
 -- 2. Useful indexes
 create index if not exists idx_post_queue_campaign_status_created

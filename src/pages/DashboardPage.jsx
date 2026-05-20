@@ -8,7 +8,7 @@ import {
   Pause, Play, Download, RefreshCw, ChevronDown, ChevronUp,
   Copy, Check, Bot, Plus, Trash2, Eye, EyeOff, Edit2,
   LogIn, Square, Zap, AlertTriangle, Terminal,
-  CheckCircle, Wifi, WifiOff, Clock, XCircle, ImageOff, ListPlus, CopyPlus
+  CheckCircle, Wifi, WifiOff, Clock, XCircle, ImageOff, ListPlus, CopyPlus, ExternalLink
 } from 'lucide-react'
 
 const BOT_API = (import.meta.env.VITE_BOT_SERVER_URL || '/bot-api').replace(/\/$/, '')
@@ -256,6 +256,15 @@ function PostActivityLog({ items }) {
                       <span className="text-flame-500 text-xs truncate block" title={item.error_log}>
                         {item.error_log.slice(0, 40)}
                       </span>
+                    ) : item.post_url ? (
+                      <a
+                        href={item.post_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-jade-400 hover:text-jade-300"
+                      >
+                        <ExternalLink size={11} /> Post
+                      </a>
                     ) : item.status === 'pending' ? (
                       <span className="text-ink-700">Waiting</span>
                     ) : null}
@@ -282,10 +291,10 @@ function CampaignRow({ campaign, onToggle, onRetryFailed, onDelete, onDuplicate 
     const rows = items
       .map(
         q =>
-          `"${q.properties?.title || ''}","${q.groups?.name || ''}","${q.assigned_bot_name || q.assigned_bot_id || ''}","${q.status}","${q.scheduled_at || ''}","${q.posted_at || ''}","${q.error_log || ''}"`
+          `"${q.properties?.title || ''}","${q.groups?.name || ''}","${q.assigned_bot_name || q.assigned_bot_id || ''}","${q.status}","${q.scheduled_at || ''}","${q.posted_at || ''}","${q.post_url || ''}","${q.error_log || ''}"`
       )
       .join('\n')
-    const blob = new Blob(['property,group,bot,status,scheduled_at,posted_at,error\n' + rows], { type: 'text/csv' })
+    const blob = new Blob(['property,group,bot,status,scheduled_at,posted_at,post_url,error\n' + rows], { type: 'text/csv' })
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob)
     a.download = `campaign-${campaign.id.slice(0, 8)}.csv`

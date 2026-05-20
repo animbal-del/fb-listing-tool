@@ -53,6 +53,7 @@ create table if not exists post_queue (
   scheduled_at timestamptz,
   status text default 'pending' check (status in ('pending', 'processing', 'posted', 'skipped', 'failed')),
   posted_at timestamptz,
+  post_url text,
   error_log text,
   duplicate_warned boolean default false,
   created_at timestamptz default now()

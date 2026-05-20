@@ -56,8 +56,10 @@ async function dbUpdate(table, id, data) {
   try {
     const { error } = await supabase.from(table).update(data).eq('id', id)
     if (error) console.log(`   ⚠️ DB(${table}) update: ${error.message}`)
+    return !error
   } catch (e) {
     console.log(`   ⚠️ DB update failed: ${e.message}`)
+    return false
   }
 }
 
@@ -367,14 +369,21 @@ async function getItemCounts() {
   }
 }
 
-async function markItem(id, status, errorLog = null) {
-  await dbUpdate('post_queue', id, {
+async function markItem(id, status, errorLog = null, postUrl = null) {
+  const payload = {
     status,
     error_log: errorLog,
     posted_at: status === 'posted' ? new Date().toISOString() : null,
+    post_url: status === 'posted' ? postUrl : null,
     claimed_at: null,
     ...(BOT_ACCOUNT_ID ? { assigned_bot_id: BOT_ACCOUNT_ID } : {}),
-  })
+  }
+
+  const ok = await dbUpdate('post_queue', id, payload)
+  if (!ok) {
+    const { post_url, ...withoutPostUrl } = payload
+    await dbUpdate('post_queue', id, withoutPostUrl)
+  }
 }
 
 // ── Selector helpers ──────────────────────────────────────
@@ -781,9 +790,9 @@ async function main() {
         page = await recoverRuntimeAfterBrowserDeath()
         const retrySuccess = await postToGroup(page, item, uiProfile, true)
 
-        if (retrySuccess === true) {
+        if (isPostSuccess(retrySuccess)) {
           browserDeathCount = 0
-          await markItem(item.id, 'posted')
+          await markItem(item.id, 'posted', null, retrySuccess.postUrl)
           todayCount++
           sessionCount++
 
@@ -809,9 +818,9 @@ async function main() {
         await markItem(item.id, 'failed', `Browser recovery failed: ${e.message}`)
         console.log(`   ❌ Browser recovery failed: ${e.message}`)
       }
-    } else if (success === true) {
+    } else if (isPostSuccess(success)) {
       browserDeathCount = 0
-      await markItem(item.id, 'posted')
+      await markItem(item.id, 'posted', null, success.postUrl)
       todayCount++
       sessionCount++
 
@@ -926,6 +935,8 @@ async function postToGroup(page, item, uiProfile, isRetry = false) {
 
     if (STOP_REQUESTED) throw new Error('BOT_STOPPED')
 
+    const beforePostUrls = await collectPostUrls(page)
+
     console.log('   🖱️ Clicking Post...')
     if (!(await clickPost(page, uiProfile))) {
       await page.screenshot({ path: join(__dir, `debug_post_${Date.now()}.png`) })
@@ -934,10 +945,17 @@ async function postToGroup(page, item, uiProfile, isRetry = false) {
     }
 
     await interruptibleSleep(randomBetween(3000, 5000))
+    const postUrl = await findNewPostUrl(page, beforePostUrls, item.groups?.fb_url)
+    if (postUrl) {
+      console.log(`   🔗 Post URL captured: ${postUrl}`)
+    } else {
+      console.log('   ⚠️ Posted, but post URL could not be detected automatically')
+    }
+
     await page.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 15000 })
     await interruptibleSleep(1500)
 
-    return true
+    return { ok: true, postUrl }
   } catch (err) {
     if (err.message === 'BOT_STOPPED') throw err
     const firstLine = String(err.message || err).split('\n')[0]
@@ -951,6 +969,10 @@ async function postToGroup(page, item, uiProfile, isRetry = false) {
     _postError = firstLine
     return false
   }
+}
+
+function isPostSuccess(result) {
+  return result === true || result?.ok === true
 }
 
 async function openComposer(page, uiProfile) {
@@ -1100,7 +1122,7 @@ async function typeText(page, text, uiProfile) {
         }
         await locator.click()
         await interruptibleSleep(400)
-        await page.keyboard.type(text, { delay: randomBetween(25, 65) })
+        await insertPlainText(locator, text)
         if (((await locator.textContent()) || '').length > 5) {
           console.log('   🎯 Used trained selector for textbox')
           return true
@@ -1116,7 +1138,7 @@ async function typeText(page, text, uiProfile) {
       if (((await el.getAttribute('aria-label')) || '').toLowerCase().includes('comment')) continue
       await el.click()
       await interruptibleSleep(400)
-      await page.keyboard.type(text, { delay: randomBetween(25, 65) })
+      await insertPlainText(el, text)
       if (((await el.textContent()) || '').length > 5) return true
     } catch {}
   }
@@ -1137,6 +1159,35 @@ async function typeText(page, text, uiProfile) {
   } catch {
     return false
   }
+}
+
+async function insertPlainText(locator, text) {
+  await locator.evaluate((el, value) => {
+    el.focus()
+
+    const selection = window.getSelection()
+    if (selection) {
+      const range = document.createRange()
+      range.selectNodeContents(el)
+      range.collapse(false)
+      selection.removeAllRanges()
+      selection.addRange(range)
+    }
+
+    const inserted = document.execCommand('insertText', false, value)
+    if (!inserted && el.isContentEditable) {
+      el.textContent = value
+    } else if (!inserted && 'value' in el) {
+      el.value = value
+    }
+
+    el.dispatchEvent(new InputEvent('input', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertText',
+      data: value,
+    }))
+  }, text)
 }
 
 async function clickPost(page, uiProfile) {
@@ -1172,6 +1223,105 @@ async function clickPost(page, uiProfile) {
     }
     return false
   })
+}
+
+async function collectPostUrls(page) {
+  try {
+    const urls = await page.evaluate(() => {
+      const values = []
+
+      for (const a of document.querySelectorAll('a[href]')) {
+        const href = a.href || ''
+        if (!href) continue
+
+        const clean = href.split('?')[0]
+        const looksLikePost =
+          /\/groups\/[^/]+\/posts\/\d+/i.test(clean) ||
+          /\/groups\/permalink\/\d+/i.test(clean) ||
+          /\/permalink\.php/i.test(clean) ||
+          /\/posts\/\d+/i.test(clean) ||
+          /story_fbid=\d+/i.test(href)
+
+        if (looksLikePost) values.push(href)
+      }
+
+      return values
+    })
+
+    return [...new Set((urls || []).map(normalizeFacebookPostUrl).filter(Boolean))]
+  } catch {
+    return []
+  }
+}
+
+async function findNewPostUrl(page, beforeUrls = [], groupUrl = '') {
+  const before = new Set((beforeUrls || []).map(normalizeFacebookPostUrl).filter(Boolean))
+
+  for (let i = 0; i < 8; i++) {
+    const currentUrls = await collectPostUrls(page)
+    const added = currentUrls.find(url => !before.has(url))
+    if (added) return added
+    await interruptibleSleep(1000)
+  }
+
+  const fallback = await findLatestVisiblePostUrl(page)
+  if (fallback && !before.has(fallback)) return fallback
+
+  const groupId = extractFacebookGroupId(groupUrl)
+  if (!groupId) return null
+
+  const anyGroupPost = (await collectPostUrls(page)).find(url => url.includes(`/groups/${groupId}/posts/`))
+  return anyGroupPost || null
+}
+
+async function findLatestVisiblePostUrl(page) {
+  try {
+    const href = await page.evaluate(() => {
+      const anchors = [...document.querySelectorAll('a[href]')]
+      const timestampAnchors = anchors.filter((a) => {
+        const aria = (a.getAttribute('aria-label') || '').toLowerCase()
+        const text = (a.textContent || '').trim().toLowerCase()
+        const href = a.href || ''
+        const hasTimeText = /\b(now|just now|m|h|min|hr|yesterday)\b/.test(text)
+        const hasTimeAria = /\b(now|just now|minute|hour|yesterday)\b/.test(aria)
+        const looksLikePost = /\/groups\/[^/]+\/posts\/\d+|\/posts\/\d+|story_fbid=\d+|permalink/i.test(href)
+        return looksLikePost && (hasTimeText || hasTimeAria)
+      })
+
+      return timestampAnchors[0]?.href || null
+    })
+
+    return normalizeFacebookPostUrl(href)
+  } catch {
+    return null
+  }
+}
+
+function normalizeFacebookPostUrl(value) {
+  if (!value) return null
+
+  try {
+    const url = new URL(value, 'https://www.facebook.com')
+    url.hash = ''
+
+    const storyId = url.searchParams.get('story_fbid')
+    const groupId = url.searchParams.get('group_id') || extractFacebookGroupId(url.pathname)
+    if (storyId && groupId) return `https://www.facebook.com/groups/${groupId}/posts/${storyId}/`
+
+    for (const key of [...url.searchParams.keys()]) url.searchParams.delete(key)
+
+    if (url.hostname.endsWith('facebook.com')) {
+      url.hostname = 'www.facebook.com'
+      return url.toString()
+    }
+  } catch {}
+
+  return null
+}
+
+function extractFacebookGroupId(value = '') {
+  const match = String(value).match(/\/groups\/([^/?#]+)/i)
+  return match?.[1] || null
 }
 
 function buildText(item) {
