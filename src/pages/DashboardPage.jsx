@@ -14,6 +14,24 @@ import {
 
 const BOT_API = (import.meta.env.VITE_BOT_SERVER_URL || '/bot-api').replace(/\/$/, '')
 
+// noVNC viewer for the bot's hosted browser (Facebook login / 2FA). Served over HTTPS
+// by the bot server; the /bot-api rewrite can't proxy websockets, so fall back to the domain.
+const REMOTE_VIEWER_URL =
+  `${BOT_API.startsWith('http') ? BOT_API : 'https://bot.denner.in'}` +
+  '/browser/vnc.html?autoconnect=true&reconnect=true&resize=scale&path=browser/websockify'
+
+function openRemoteBrowser() {
+  window.open(REMOTE_VIEWER_URL, '_blank', 'noopener,noreferrer')
+}
+
+function RemoteBrowserButton({ className = '' }) {
+  return (
+    <button type="button" onClick={openRemoteBrowser} className={className}>
+      <ExternalLink size={12} /> Open Remote Browser
+    </button>
+  )
+}
+
 // fb_password is write-only for browser clients — never select it
 const BOT_COLUMNS =
   'id, name, fb_email, session_file, status, last_active, posts_today, posts_today_date, total_posts, active, created_at, ' +
@@ -749,9 +767,12 @@ function LogViewerModal({ open, bot, onClose }) {
         </div>
         <div className="flex justify-between items-center mt-3">
           <p className="text-xs text-ink-600">{lines.length} lines · live</p>
-          <button onClick={() => { setLines([]); setCountdown(null) }} className="btn-ghost py-1.5 text-xs">
-            Clear
-          </button>
+          <div className="flex items-center gap-2">
+            <RemoteBrowserButton className="btn-primary py-1.5 text-xs" />
+            <button onClick={() => { setLines([]); setCountdown(null) }} className="btn-ghost py-1.5 text-xs">
+              Clear
+            </button>
+          </div>
         </div>
       </div>
     </Modal>
@@ -984,9 +1005,7 @@ function BotCard({ bot, campaigns, serverOnline, onEdit, onDelete, onRefresh }) 
     setBusy('login')
     try {
       const data = await loginBot(bot.id)
-      if (data?.viewer_url) {
-        window.open(data.viewer_url, '_blank', 'noopener,noreferrer')
-      }
+      if (data?.viewer_url) openRemoteBrowser()
       onRefresh()
       setLogOpen(true)
     } catch (err) {
@@ -1073,6 +1092,10 @@ function BotCard({ bot, campaigns, serverOnline, onEdit, onDelete, onRefresh }) 
                 </>
               )}
             </button>
+          )}
+
+          {bot.isLoggingIn && (
+            <RemoteBrowserButton className="w-full py-2 text-xs rounded-xl border font-medium flex items-center justify-center gap-1.5 bg-flame-500/10 border-flame-500/30 text-flame-400 hover:bg-flame-500/20 transition-all" />
           )}
 
           <p className="text-[11px] text-ink-500 px-1">Opens a hosted browser tab for Facebook login and UI training.</p>
