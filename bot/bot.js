@@ -12,6 +12,7 @@ import { existsSync, writeFileSync, mkdirSync, rmSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import 'dotenv/config'
+import { cleanPostText } from './postText.js'
 
 const __dir = dirname(fileURLToPath(import.meta.url))
 
@@ -1333,7 +1334,8 @@ function buildText(item) {
   t = t.replace(/\{locality\}/g, p.locality || '')
   t = t.replace(/\{rent\}/g, p.rent ? '₹' + Number(p.rent).toLocaleString('en-IN') : '')
   t = t.replace(/\{deposit\}/g, p.deposit ? '₹' + Number(p.deposit).toLocaleString('en-IN') : '')
-  return t
+  // Strip links (they send posts to admin approval); stored description is untouched
+  return cleanPostText(t)
 }
 
 function randomBetween(min, max) {
