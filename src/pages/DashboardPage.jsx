@@ -14,6 +14,11 @@ import {
 
 const BOT_API = (import.meta.env.VITE_BOT_SERVER_URL || '/bot-api').replace(/\/$/, '')
 
+// fb_password is write-only for browser clients — never select it
+const BOT_COLUMNS =
+  'id, name, fb_email, session_file, status, last_active, posts_today, posts_today_date, total_posts, active, created_at, ' +
+  'min_delay_seconds, max_delay_seconds, max_posts_per_day, post_start_hour, post_end_hour, session_cap, session_break_min, session_break_max'
+
 async function getAccessToken() {
   const { data } = await dennerSupabase.auth.getSession()
   return data?.session?.access_token || ''
@@ -460,7 +465,7 @@ function BotFormInner({ initial, isEdit, onClose, onSaved }) {
   const validate = () => {
     if (!form.name.trim()) return 'Bot name is required'
     if (!form.fb_email.trim()) return 'Facebook email is required'
-    if (!form.fb_password.trim()) return 'Password is required'
+    if (!isEdit && !form.fb_password.trim()) return 'Password is required'
 
     const maxPosts = toInt(form.max_posts_per_day, 18)
     const startHour = toInt(form.post_start_hour, 9)
@@ -500,7 +505,8 @@ function BotFormInner({ initial, isEdit, onClose, onSaved }) {
       const payload = {
         name: form.name.trim(),
         fb_email: form.fb_email.trim(),
-        fb_password: form.fb_password.trim(),
+        // On edit, a blank password keeps the stored one
+        ...(form.fb_password.trim() ? { fb_password: form.fb_password.trim() } : {}),
         max_posts_per_day: toInt(form.max_posts_per_day, 18),
         post_start_hour: toInt(form.post_start_hour, 9),
         post_end_hour: toInt(form.post_end_hour, 20),
@@ -515,8 +521,8 @@ function BotFormInner({ initial, isEdit, onClose, onSaved }) {
       }
 
       const query = isEdit
-        ? supabase.from('bot_accounts').update(payload).eq('id', initial.id).select().single()
-        : supabase.from('bot_accounts').insert([payload]).select().single()
+        ? supabase.from('bot_accounts').update(payload).eq('id', initial.id).select(BOT_COLUMNS).single()
+        : supabase.from('bot_accounts').insert([payload]).select(BOT_COLUMNS).single()
 
       const { error } = await query
       if (error) throw error
@@ -569,7 +575,7 @@ function BotFormInner({ initial, isEdit, onClose, onSaved }) {
               <input
                 className="input pr-10"
                 type={showPw ? 'text' : 'password'}
-                placeholder="••••••••"
+                placeholder={isEdit ? 'Leave blank to keep current password' : '••••••••'}
                 value={form.fb_password}
                 onChange={e => set('fb_password', e.target.value)}
               />
@@ -963,7 +969,6 @@ const BOT_STATUS = {
 }
 
 function BotCard({ bot, campaigns, serverOnline, onEdit, onDelete, onRefresh }) {
-  const [showPw, setShowPw] = useState(false)
   const [logOpen, setLogOpen] = useState(false)
   const [startOpen, setStartOpen] = useState(false)
   const [queueOpen, setQueueOpen] = useState(false)
@@ -1032,12 +1037,6 @@ function BotCard({ bot, campaigns, serverOnline, onEdit, onDelete, onRefresh }) 
           <div className="text-center">
             <p className="text-xl font-bold text-ink-100">{bot.total_posts || 0}</p>
             <p className="text-xs text-ink-600">Total</p>
-          </div>
-          <div className="flex items-center gap-1 ml-auto">
-            <span className="text-xs font-mono text-ink-700">{showPw ? bot.fb_password : '••••••'}</span>
-            <button onClick={() => setShowPw(s => !s)} className="text-ink-700 hover:text-ink-500 p-0.5">
-              {showPw ? <EyeOff size={10} /> : <Eye size={10} />}
-            </button>
           </div>
         </div>
 
@@ -1137,7 +1136,7 @@ function BotAccountsSection({ campaigns }) {
   const [formModal, setFormModal] = useState(null)
 
   const refresh = useCallback(async () => {
-    const { data: dbBots, error: dbErr } = await supabase.from('bot_accounts').select('*').order('created_at')
+    const { data: dbBots, error: dbErr } = await supabase.from('bot_accounts').select(BOT_COLUMNS).order('created_at')
     if (dbErr) console.error('bot_accounts:', dbErr.message)
 
     const serverUp = await checkServer()

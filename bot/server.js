@@ -24,7 +24,7 @@ app.use(cors({ origin: '*' }))
 app.use(express.json())
 
 const SUPA_URL = process.env.SUPABASE_URL
-const SUPA_KEY = process.env.SUPABASE_KEY
+const SUPA_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY
 
 if (!SUPA_URL || !SUPA_KEY) {
   console.error('\n❌ MISSING: SUPABASE_URL or SUPABASE_KEY not found in bot/.env')

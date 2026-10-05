@@ -20,7 +20,7 @@ const BOT_ACCOUNT_ID  = process.env.BOT_ACCOUNT_ID  || null
 const CAMPAIGN_ID     = process.env.CAMPAIGN_ID
 
 // Old Supabase — campaigns, post_queue, bot_accounts, groups
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY)
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY)
 
 // Denner's Supabase — use service role key so RLS is bypassed for inventory reads
 const dennerSupabase = createClient(

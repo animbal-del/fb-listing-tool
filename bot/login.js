@@ -9,7 +9,7 @@ import { dirname, join } from 'path'
 import 'dotenv/config'
 
 const __dir = dirname(fileURLToPath(import.meta.url))
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY)
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY)
 const TRAINING_GROUP_URL =
   process.env.TRAINING_GROUP_URL || 'https://www.facebook.com/groups/740033105526357'
 
