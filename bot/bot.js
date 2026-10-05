@@ -795,7 +795,7 @@ async function main() {
 
         if (isPostSuccess(retrySuccess)) {
           browserDeathCount = 0
-          await markItem(item.id, 'posted', null, retrySuccess.postUrl)
+          await markItem(item.id, 'posted', retrySuccess.note || null, retrySuccess.postUrl)
           todayCount++
           sessionCount++
 
@@ -823,7 +823,7 @@ async function main() {
       }
     } else if (isPostSuccess(success)) {
       browserDeathCount = 0
-      await markItem(item.id, 'posted', null, success.postUrl)
+      await markItem(item.id, 'posted', success.note || null, success.postUrl)
       todayCount++
       sessionCount++
 
@@ -875,6 +875,8 @@ function logPostError(step, detail = '') {
 // ── Post to one group ─────────────────────────────────────
 async function postToGroup(page, item, uiProfile, isRetry = false) {
   _postError = null
+  // Once Post is clicked the listing may be live — never report failure or retry after that
+  let postClicked = false
 
   const text   = buildText(item)
   const propId = item.properties?.id
@@ -952,22 +954,45 @@ async function postToGroup(page, item, uiProfile, isRetry = false) {
       logPostError('Post button did not respond', propLabel)
       return false
     }
+    postClicked = true
 
-    await interruptibleSleep(randomBetween(3000, 5000))
-    const postUrl = await findNewPostUrl(page, beforePostUrls, item.groups?.fb_url)
-    if (postUrl) {
-      console.log(`   🔗 Post URL captured: ${postUrl}`)
-    } else {
-      console.log('   ⚠️ Posted, but post URL could not be detected automatically')
+    // Facebook closes the composer once it has accepted the post
+    if (!(await waitForComposerClosed(45000))) {
+      await page.screenshot({ path: join(__dir, `debug_post_${Date.now()}.png`) }).catch(() => {})
+      logPostError("Facebook didn't confirm the post (composer stayed open) — check the group before retrying", propLabel)
+      return false
     }
+    console.log('   ✅ Facebook accepted the post')
 
-    await page.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 15000 })
-    await interruptibleSleep(1500)
+    // Everything below is best-effort: the post is already submitted
+    let postUrl = null
+    try {
+      await interruptibleSleep(randomBetween(3000, 5000))
+      postUrl = await findNewPostUrl(page, beforePostUrls, item.groups?.fb_url)
+    } catch (e) {
+      if (e.message === 'BOT_STOPPED') return { ok: true, postUrl: null }
+    }
+    console.log(postUrl
+      ? `   🔗 Post URL captured: ${postUrl}`
+      : '   ⚠️ Posted, but post URL could not be detected (normal for posts awaiting admin approval)')
+
+    try {
+      await page.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 30000 })
+      await interruptibleSleep(1500)
+    } catch (e) {
+      console.log(`   ⚠️ Could not return to home page (${String(e.message).split('\n')[0]}) — continuing`)
+    }
 
     return { ok: true, postUrl }
   } catch (err) {
-    if (err.message === 'BOT_STOPPED') throw err
     const firstLine = String(err.message || err).split('\n')[0]
+    if (postClicked) {
+      // Never retry or fail a post that may already be live (would duplicate it)
+      console.log(`   ⚠️ Error after clicking Post [${propLabel}]: ${firstLine} — marked posted, please check the group`)
+      if (err.message === 'BOT_STOPPED') STOP_REQUESTED = true
+      return { ok: true, postUrl: null, note: `Post was submitted but not confirmed (${firstLine}) — check the group` }
+    }
+    if (err.message === 'BOT_STOPPED') throw err
     if (isClosedTargetError(err)) {
       console.log(`   ⚠️ Browser closed mid-post [${propLabel}]: ${firstLine}`)
       _postError = `Browser closed: ${firstLine}`
@@ -1147,6 +1172,16 @@ async function typeText(page, text, uiProfile) {
   }
 
   return false
+}
+
+async function waitForComposerClosed(timeoutMs) {
+  if (!COMPOSER_LOCATOR) return false
+  try {
+    await COMPOSER_LOCATOR.waitFor({ state: 'hidden', timeout: timeoutMs })
+    return true
+  } catch {
+    return false
+  }
 }
 
 // Re-check the composer right before clicking Post (media upload can disturb it)
