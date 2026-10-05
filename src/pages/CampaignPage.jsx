@@ -115,7 +115,7 @@ export default function CampaignPage() {
   const dupCount = Object.keys(dupWarnings).length
 
   return (
-    <div className="p-8 fade-up">
+    <div className="px-8 pt-8 fade-up">
       <div className="mb-8">
         <h1 className="text-2xl font-semibold text-ink-100">{duplicateCampaign ? 'Create Similar Campaign' : 'New Campaign'}</h1>
         <p className="text-sm text-ink-400 mt-0.5">
@@ -199,11 +199,11 @@ export default function CampaignPage() {
             </div>
           )}
 
-          <div className="flex justify-end">
+          <StickyBar info={`${selectedProps.size} listing${selectedProps.size === 1 ? '' : 's'} selected`}>
             <button className="btn-primary" disabled={!selectedProps.size} onClick={() => setStep(1)}>
               Next: Select Groups <ChevronRight size={15}/>
             </button>
-          </div>
+          </StickyBar>
         </div>
       )}
 
@@ -267,12 +267,12 @@ export default function CampaignPage() {
             </div>
           )}
 
-          <div className="flex justify-between">
+          <StickyBar info={`${selectedGroups.size} group${selectedGroups.size === 1 ? '' : 's'} selected`}>
             <button className="btn-ghost" onClick={() => setStep(0)}>← Back</button>
             <button className="btn-primary" disabled={!selectedGroups.size} onClick={() => goToStep(2)}>
               Next: Review Queue <ChevronRight size={15}/>
             </button>
-          </div>
+          </StickyBar>
         </div>
       )}
 
@@ -312,16 +312,17 @@ export default function CampaignPage() {
               </tbody>
             </table>
           </div>
-          <div className="flex justify-between">
+          <StickyBar info={`${queueItems.length} post${queueItems.length === 1 ? '' : 's'} queued`}>
             <button className="btn-ghost" onClick={() => setStep(1)}>← Back</button>
             <button className="btn-primary" onClick={() => setStep(3)}>Next: Settings <ChevronRight size={15}/></button>
-          </div>
+          </StickyBar>
         </div>
       )}
 
       {/* ── STEP 3 — Settings & Launch ── */}
       {step === 3 && (
-        <div className="max-w-lg">
+        <div>
+          <div className="max-w-lg">
           <div className="card p-6 space-y-5 mb-6">
             <div>
               <label className="label">Campaign Notes (optional)</label>
@@ -372,15 +373,26 @@ export default function CampaignPage() {
           </div>
 
           {error && <p className="text-sm text-flame-400 bg-flame-500/10 border border-flame-500/20 rounded-lg px-3 py-2 mb-4">{error}</p>}
+          </div>
 
-          <div className="flex justify-between">
+          <StickyBar info={`${queueItems.length} post${queueItems.length === 1 ? '' : 's'} ready to launch`}>
             <button className="btn-ghost" onClick={() => setStep(2)}>← Back</button>
             <button className="btn-primary" disabled={launching} onClick={launch}>
               {launching ? <><Loader2 size={14} className="animate-spin"/> Launching…</> : duplicateCampaign ? '↺ Create Similar Campaign' : '🚀 Launch Campaign'}
             </button>
-          </div>
+          </StickyBar>
         </div>
       )}
+    </div>
+  )
+}
+
+// Action bar pinned to the bottom of the scrolling page so Back/Next stay visible
+function StickyBar({ info, children }) {
+  return (
+    <div className="sticky bottom-0 z-20 -mx-8 mt-6 px-8 py-4 bg-ink-900/95 backdrop-blur border-t border-ink-800 flex items-center justify-between gap-3 flex-wrap">
+      <p className="text-sm text-ink-400">{info}</p>
+      <div className="flex items-center gap-2">{children}</div>
     </div>
   )
 }
