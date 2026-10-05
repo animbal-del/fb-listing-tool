@@ -7,3 +7,4 @@ playwright-report/
 temp_photos/
 *.log
 .DS_Store
+.claude/settings.local.json

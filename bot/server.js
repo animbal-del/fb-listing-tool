@@ -51,6 +51,37 @@ async function db(fn) {
   }
 }
 
+// ── Auth: dashboard users sign in via Denner's Supabase; require that session ──
+const DENNER_URL = process.env.DENNER_SUPABASE_URL
+const DENNER_KEY = process.env.DENNER_SUPABASE_KEY
+const authClient = DENNER_URL && DENNER_KEY
+  ? createClient(DENNER_URL, DENNER_KEY, { auth: { persistSession: false, autoRefreshToken: false } })
+  : null
+if (!authClient) console.error('\n❌ MISSING: DENNER_SUPABASE_URL / DENNER_SUPABASE_KEY — bot API will reject all requests')
+
+const tokenCache = new Map() // token -> expiry ms
+const TOKEN_CACHE_MS = 60_000
+
+async function requireUser(req, res, next) {
+  const header = req.headers.authorization || ''
+  const token = header.startsWith('Bearer ') ? header.slice(7) : req.query.access_token
+  if (!token || !authClient) return res.status(401).json({ error: 'Unauthorized' })
+
+  const cached = tokenCache.get(token)
+  if (cached && cached > Date.now()) return next()
+
+  try {
+    const { data, error } = await authClient.auth.getUser(token)
+    if (error || !data?.user) return res.status(401).json({ error: 'Unauthorized' })
+  } catch {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  if (tokenCache.size > 500) tokenCache.clear()
+  tokenCache.set(token, Date.now() + TOKEN_CACHE_MS)
+  next()
+}
+
 const procs = {}
 const logSubs = {}
 const botQueues = {}
@@ -232,6 +263,8 @@ browserProxy.on('error', (err, req, res) => {
   try { res?.end?.() } catch {}
 })
 
+app.use(['/bots', '/remote-session'], requireUser)
+
 app.use('/browser', (req, res) => {
   req.url = req.originalUrl.replace(/^\/browser/, '') || '/'
   browserProxy.web(req, res)
@@ -279,7 +312,7 @@ app.get('/bots', async (_req, res) => {
       return res.json({ bots: [], error: error.message })
     }
 
-    const bots = (data || []).map(bot => {
+    const bots = (data || []).map(({ fb_password, ...bot }) => {
       const sp = join(__dir, bot.session_file || `fb_session_${bot.id.slice(0, 8)}.json`)
       return {
         ...bot,

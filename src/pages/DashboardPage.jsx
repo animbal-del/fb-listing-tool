@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useCampaigns } from '../hooks/useCampaigns'
 import { supabase } from '../lib/supabase'
+import { dennerSupabase } from '../lib/dennerSupabase'
 import StatusBadge from '../components/StatusBadge'
 import Modal from '../components/Modal'
 import {
@@ -13,13 +14,20 @@ import {
 
 const BOT_API = (import.meta.env.VITE_BOT_SERVER_URL || '/bot-api').replace(/\/$/, '')
 
+async function getAccessToken() {
+  const { data } = await dennerSupabase.auth.getSession()
+  return data?.session?.access_token || ''
+}
+
 async function apiFetch(path, options = {}) {
+  const token = await getAccessToken()
   const res = await fetch(`${BOT_API}${path}`, {
+    ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(options.headers || {}),
     },
-    ...options,
   })
 
   const contentType = res.headers.get('content-type') || ''
@@ -68,19 +76,26 @@ async function stopBot(id) {
 }
 
 function streamLogs(id, onLine, onCountdown) {
-  const es = new EventSource(`${BOT_API}/bots/${id}/logs`)
-  es.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data)
-      if (data?.line) onLine(data.line)
-      if (data?.countdown && onCountdown) onCountdown(data.countdown)
-    } catch {}
-  }
-  es.onerror = () => {
-    try { es.close() } catch {}
-  }
+  // EventSource can't send headers, so the token goes in the query string
+  let es = null
+  let closed = false
+  getAccessToken().then(token => {
+    if (closed) return
+    es = new EventSource(`${BOT_API}/bots/${id}/logs?access_token=${encodeURIComponent(token)}`)
+    es.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        if (data?.line) onLine(data.line)
+        if (data?.countdown && onCountdown) onCountdown(data.countdown)
+      } catch {}
+    }
+    es.onerror = () => {
+      try { es.close() } catch {}
+    }
+  })
   return () => {
-    try { es.close() } catch {}
+    closed = true
+    try { es?.close() } catch {}
   }
 }
 
@@ -1132,7 +1147,9 @@ function BotAccountsSection({ campaigns }) {
       try {
         const serverBots = await fetchBots()
         if (Array.isArray(serverBots) && serverBots.length > 0) {
-          setBots(serverBots)
+          // Server omits fb_password; keep the DB row's fields for the edit form
+          const dbById = Object.fromEntries((dbBots || []).map(b => [b.id, b]))
+          setBots(serverBots.map(b => ({ ...dbById[b.id], ...b })))
           setLoading(false)
           return
         }
