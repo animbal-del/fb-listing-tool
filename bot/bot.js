@@ -13,6 +13,7 @@ import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import 'dotenv/config'
 import { cleanPostText } from './postText.js'
+import { fillComposer, clearComposer, readComposerText, composerTextMatches } from './composer.js'
 
 const __dir = dirname(fileURLToPath(import.meta.url))
 
@@ -32,6 +33,7 @@ const dennerSupabase = createClient(
 let STOP_REQUESTED = false
 let CURRENT_CONTEXT = null
 let CURRENT_PAGE = null
+let COMPOSER_LOCATOR = null
 let _cdTimer = null
 
 const EMPTY_QUEUE_POLL_MS = 60 * 1000
@@ -914,8 +916,9 @@ async function postToGroup(page, item, uiProfile, isRetry = false) {
     if (STOP_REQUESTED) throw new Error('BOT_STOPPED')
 
     console.log('   ✍️ Typing text...')
+    COMPOSER_LOCATOR = null
     if (!(await typeText(page, text, uiProfile))) {
-      logPostError('Could not type text into composer', propLabel)
+      logPostError('Could not type text into composer (text did not match after retry — not posted)', propLabel)
       return false
     }
 
@@ -935,6 +938,11 @@ async function postToGroup(page, item, uiProfile, isRetry = false) {
     }
 
     if (STOP_REQUESTED) throw new Error('BOT_STOPPED')
+
+    if (!(await composerStillMatches(text))) {
+      logPostError('Composer text changed before posting — not posted', propLabel)
+      return false
+    }
 
     const beforePostUrls = await collectPostUrls(page)
 
@@ -1114,81 +1122,41 @@ async function attachMedia(page, localPaths, uiProfile) {
 async function typeText(page, text, uiProfile) {
   if (STOP_REQUESTED) throw new Error('BOT_STOPPED')
 
+  const candidates = []
   if (uiProfile?.textbox_selector) {
     const locator = await findProfileLocator(page, uiProfile.textbox_selector, 2500)
-    if (locator) {
-      try {
-        if (((await locator.getAttribute('aria-label')) || '').toLowerCase().includes('comment')) {
-          throw new Error('Matched comment box')
-        }
-        await locator.click()
-        await interruptibleSleep(400)
-        await insertPlainText(locator, text)
-        if (((await locator.textContent()) || '').length > 5) {
-          console.log('   🎯 Used trained selector for textbox')
-          return true
-        }
-      } catch {}
-    }
+    if (locator) candidates.push({ locator, label: 'trained selector' })
+  }
+  for (const sel of ['[role="dialog"] [role="textbox"]', '[role="dialog"] [contenteditable="true"]']) {
+    candidates.push({ locator: page.locator(sel).first(), label: sel })
   }
 
-  for (const sel of ['[role="dialog"] [role="textbox"]', '[role="dialog"] [contenteditable="true"]']) {
+  for (const { locator, label } of candidates) {
     try {
-      const el = page.locator(sel).first()
-      await el.waitFor({ state: 'visible', timeout: 6000 })
-      if (((await el.getAttribute('aria-label')) || '').toLowerCase().includes('comment')) continue
-      await el.click()
-      await interruptibleSleep(400)
-      await insertPlainText(el, text)
-      if (((await el.textContent()) || '').length > 5) return true
+      await locator.waitFor({ state: 'visible', timeout: 6000 })
+      if (((await locator.getAttribute('aria-label')) || '').toLowerCase().includes('comment')) continue
+      const { ok } = await fillComposer(page, locator, text)
+      if (ok) {
+        console.log(`   🎯 Text typed and verified (${label})`)
+        COMPOSER_LOCATOR = locator
+        return true
+      }
+      // Leave the box empty so the next candidate can't stack a second copy
+      await clearComposer(page, locator).catch(() => {})
     } catch {}
   }
 
+  return false
+}
+
+// Re-check the composer right before clicking Post (media upload can disturb it)
+async function composerStillMatches(text) {
+  if (!COMPOSER_LOCATOR) return false
   try {
-    return await page.evaluate((t) => {
-      for (const box of document.querySelectorAll('[contenteditable="true"]')) {
-        if (((box.getAttribute('aria-label')) || '').toLowerCase().includes('comment')) continue
-        const r = box.getBoundingClientRect()
-        if (r.width > 200 && r.height > 30) {
-          box.focus()
-          document.execCommand('insertText', false, t)
-          return box.textContent.length > 0
-        }
-      }
-      return false
-    }, text)
+    return composerTextMatches(text, await readComposerText(COMPOSER_LOCATOR))
   } catch {
     return false
   }
-}
-
-async function insertPlainText(locator, text) {
-  await locator.evaluate((el, value) => {
-    el.focus()
-
-    const selection = window.getSelection()
-    if (selection) {
-      const range = document.createRange()
-      range.selectNodeContents(el)
-      range.collapse(false)
-      selection.removeAllRanges()
-      selection.addRange(range)
-    }
-
-    const inserted = document.execCommand('insertText', false, value)
-    if (!inserted && el.isContentEditable) {
-      el.textContent = value
-    } else if (!inserted && 'value' in el) {
-      el.value = value
-    }
-
-    el.dispatchEvent(new InputEvent('input', {
-      bubbles: true,
-      cancelable: true,
-      inputType: 'insertText',
-      data: value,
-    }))
-  }, text)
 }
 
 async function clickPost(page, uiProfile) {

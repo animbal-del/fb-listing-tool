@@ -5,6 +5,7 @@
 //   • any other link (maps, websites, bare domains, emails)
 // and the "📞 Call:" label becomes "📩 WhatsApp:" (numbers kept).
 // If no contact line is left, the standard numbers are appended.
+// The "Highlights" / "Location Highlights" sections are dropped and blank lines separate the sections.
 // Pure text transform — the stored descriptions in Denner's DB are never modified.
 
 const DEFAULT_CONTACT = process.env.POST_CONTACT_NUMBERS || '9156005618 / 7020738841'
@@ -66,14 +67,63 @@ export function cleanPostText(input) {
     out.push(line)
   }
 
-  let text = out
+  let body = addSectionSpacing(removeHighlights(out))
+
+  if (body.length && !body.some(l => /whats\s*app\s*:?\s*\+?\d/i.test(l))) {
+    body.push(`📩 WhatsApp: ${DEFAULT_CONTACT}`)
+    body = addSectionSpacing(body)
+  }
+
+  return body
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
+}
 
-  if (text && !/whats\s*app\s*:?\s*\+?\d/i.test(text)) {
-    text += `\n📩 WhatsApp: ${DEFAULT_CONTACT}`
+const BULLET_RE = /^\s*[•\-*▪◦●✔✓➤►]/
+
+function stripLeadingEmoji(line) {
+  return line.replace(LEADING_EMOJI_RE, '')
+}
+
+// Drop the "✨ Highlights:" header and its bullet list (keeps posts short)
+function removeHighlights(lines) {
+  const out = []
+  for (let i = 0; i < lines.length; i++) {
+    const m = stripLeadingEmoji(lines[i]).match(/^(?:key|location|property|nearby)?\s*highlights?\s*:?\s*(.*)$/i)
+    if (!m) { out.push(lines[i]); continue }
+    if (m[1].trim()) continue // inline "Highlights: a, b, c"
+    while (i + 1 < lines.length && (BULLET_RE.test(lines[i + 1]) || !lines[i + 1].trim())) {
+      if (!lines[i + 1].trim() && !BULLET_RE.test(lines[i + 2] || '')) break
+      i++
+    }
+  }
+  return out
+}
+
+// Blank line after the title, before each "Header:" + bullets section,
+// and before the WhatsApp contact line
+// Divider lines like "⸻", "-----", "═══" become a single blank line
+const DIVIDER_RE = /^\s*[⸻—–\-_=═~]+\s*$/
+
+function addSectionSpacing(lines) {
+  const src = []
+  const breakBefore = new Set()
+  for (const raw of lines) {
+    const l = raw.replace(/\s+$/, '')
+    if (DIVIDER_RE.test(l)) { breakBefore.add(src.length); continue }
+    if (l.trim()) src.push(l)
   }
 
-  return text
+  const out = []
+  const isBullet = i => BULLET_RE.test(src[i] || '')
+
+  src.forEach((line, i) => {
+    const isSectionHeader = !isBullet(i) && /:\s*$/.test(line) && isBullet(i + 1)
+    const afterList = !isBullet(i) && isBullet(i - 1)
+    const isContact = /^whats\s*app\s*:?\s*\+?\d/i.test(stripLeadingEmoji(line))
+    if (i > 0 && (i === 1 || isSectionHeader || afterList || isContact || breakBefore.has(i))) out.push('')
+    out.push(line)
+  })
+  return out
 }
