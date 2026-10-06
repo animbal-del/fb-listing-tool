@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useProperties } from '../hooks/useProperties'
 import { dennerSupabase } from '../lib/dennerSupabase'
+import { DnrTag, matchesFlatSearch } from '../lib/flatCode'
 import Modal from '../components/Modal'
 import PropertyForm from '../components/PropertyForm'
 import StatusBadge from '../components/StatusBadge'
@@ -229,12 +230,8 @@ export default function PropertiesPage() {
 
   const filtered = useMemo(() => {
     return properties.filter((p) => {
-      // title is society_name after normalization; search on that + locality
-      const title    = p.title?.toLowerCase() || ''
-      const locality = p.locality?.toLowerCase() || ''
-      const query    = search.toLowerCase()
-
-      const matchSearch = !search || title.includes(query) || locality.includes(query)
+      // name (society), locality or DNR code
+      const matchSearch = matchesFlatSearch(p, search)
       const matchStatus = filterStatus === 'all' || p.status === filterStatus
 
       return matchSearch && matchStatus
@@ -421,7 +418,7 @@ export default function PropertiesPage() {
           />
           <input
             className="input pl-9"
-            placeholder="Search by title or locality…"
+            placeholder="Search name, locality or DNR number…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -517,7 +514,7 @@ export default function PropertiesPage() {
 
                 {/* Denner ID · BHK · Locality */}
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-ink-500 mb-2">
-                  <span className="font-mono text-ink-600">#{p.id}</span>
+                  {p.code ? <DnrTag code={p.code} /> : <span className="font-mono text-ink-600">#{p.id}</span>}
                   {p.bhk && (
                     <span className="bg-ink-700 text-ink-300 px-1.5 py-0.5 rounded text-[10px] font-medium">
                       {p.bhk}

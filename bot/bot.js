@@ -89,7 +89,7 @@ async function fetchFlatForBot(propertyId) {
     const [flatRes, mediaRes, intakeRes] = await Promise.all([
       dennerSupabase
         .from('inventory_flats')
-        .select('id, title, society_name, monthly_rent, deposit, locality, owner_phone, source_phone, handler_whatsapp_number')
+        .select('id, flat_code, title, society_name, monthly_rent, deposit, locality, owner_phone, source_phone, handler_whatsapp_number')
         .eq('id', propertyId)
         .single(),
       dennerSupabase
@@ -130,6 +130,7 @@ async function fetchFlatForBot(propertyId) {
     return {
       id:            flat.id,
       title:         displayTitle,
+      code:          flat.flat_code || '',
       description:   intake?.raw_description || '',
       rent:          flat.monthly_rent,
       deposit:       flat.deposit,
@@ -773,7 +774,7 @@ async function main() {
     }
 
     console.log(`\n📤 [${todayCount + 1}/${runtime.effectiveMaxPostsPerDay}] → ${item.groups.name}`)
-    console.log(`   Listing: ${item.properties.title}`)
+    console.log(`   Listing: ${item.properties.title}${item.properties.code ? ` (${item.properties.code})` : ''}`)
 
     page = await ensureLivePage()
 
@@ -881,7 +882,7 @@ async function postToGroup(page, item, uiProfile, isRetry = false) {
   const text   = buildText(item)
   const propId = item.properties?.id
   const media  = collectPropertyMedia(item.properties || {})
-  const propLabel  = `"${item.properties?.title || propId}" → ${item.groups?.name}`
+  const propLabel  = `"${item.properties?.title || propId}${item.properties?.code ? ` ${item.properties.code}` : ''}" → ${item.groups?.name}`
 
   // Guard: skip post if there is no text to type
   if (!text || text.trim().length < 5) {

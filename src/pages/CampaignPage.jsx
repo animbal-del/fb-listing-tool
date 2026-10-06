@@ -3,6 +3,7 @@ import { useProperties } from '../hooks/useProperties'
 import { useGroups }     from '../hooks/useGroups'
 import { useCampaigns }  from '../hooks/useCampaigns'
 import { supabase }      from '../lib/supabase'
+import { DnrTag, matchesFlatSearch } from '../lib/flatCode'
 import { useNavigate, useLocation }   from 'react-router-dom'
 import {
   CheckSquare, Square, AlertTriangle, ChevronRight,
@@ -54,7 +55,7 @@ export default function CampaignPage() {
 
   // Filtered lists
   const filteredProps = availableProps.filter(p => {
-    const matchSearch   = !propSearch   || p.title.toLowerCase().includes(propSearch.toLowerCase())
+    const matchSearch   = matchesFlatSearch(p, propSearch)
     const matchLocality = propLocality  === 'all' || p.locality === propLocality
     return matchSearch && matchLocality
   })
@@ -170,7 +171,7 @@ export default function CampaignPage() {
           {/* Search */}
           <div className="relative mb-4 max-w-xs">
             <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-500"/>
-            <input className="input pl-9 text-sm" placeholder="Search listings…"
+            <input className="input pl-9 text-sm" placeholder="Search name or DNR number…"
               value={propSearch} onChange={e => setPropSearch(e.target.value)}/>
           </div>
 
@@ -186,7 +187,10 @@ export default function CampaignPage() {
                     <div className="flex items-start gap-3">
                       {sel ? <CheckSquare size={16} className="text-flame-400 shrink-0 mt-0.5"/> : <Square size={16} className="text-ink-500 shrink-0 mt-0.5"/>}
                       <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-ink-100 truncate">{p.title}</p>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <p className="text-sm font-medium text-ink-100 truncate">{p.title}</p>
+                          <DnrTag code={p.code} className="shrink-0" />
+                        </div>
                         <p className="text-xs text-ink-400 mt-0.5">
                           {p.locality && <span className="text-ink-500">📍 {p.locality}</span>}
                           {p.rent && <span className="ml-2">₹{p.rent.toLocaleString()}/mo</span>}
@@ -301,7 +305,9 @@ export default function CampaignPage() {
                   const isDup = dupWarnings[`${item.property_id}-${item.group_id}`]
                   return (
                     <tr key={i} className={isDup ? 'bg-yellow-500/5' : ''}>
-                      <td className="px-4 py-2.5 text-ink-200">{propMap[item.property_id]?.title}</td>
+                      <td className="px-4 py-2.5 text-ink-200">
+                        {propMap[item.property_id]?.title} <DnrTag code={propMap[item.property_id]?.code} className="ml-1" />
+                      </td>
                       <td className="px-4 py-2.5 text-ink-400">{groupMap[item.group_id]?.name}</td>
                       <td className="px-4 py-2.5 text-right">
                         {isDup && <span className="inline-flex items-center gap-1 text-xs text-yellow-400"><AlertTriangle size={11}/> Recently posted</span>}

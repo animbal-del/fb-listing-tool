@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useCampaigns } from '../hooks/useCampaigns'
 import { supabase } from '../lib/supabase'
 import { dennerSupabase } from '../lib/dennerSupabase'
+import { DnrTag } from '../lib/flatCode'
 import StatusBadge from '../components/StatusBadge'
 import Modal from '../components/Modal'
 import {
@@ -265,7 +266,9 @@ function PostActivityLog({ items }) {
                         </div>
                       )}
                       <div>
-                        <p className="text-ink-200 font-medium leading-tight">{item.properties?.title || '—'}</p>
+                        <p className="text-ink-200 font-medium leading-tight">
+                          {item.properties?.title || '—'} <DnrTag code={item.properties?.code} className="ml-1" />
+                        </p>
                         {item.properties?.locality && <p className="text-ink-600 text-xs">{item.properties.locality}</p>}
                       </div>
                     </div>

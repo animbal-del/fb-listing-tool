@@ -14,6 +14,7 @@ function normalizeFlat(flat, intake = null) {
   return {
     id:           flat.id,
     title:        flat.society_name || flat.title || '',
+    code:         flat.flat_code || '',
     society_name: flat.society_name || '',
     description:  intake?.raw_description || '',
     rent:         flat.monthly_rent,
@@ -50,7 +51,7 @@ export function useProperties() {
       const { data: flats, error: flatsErr } = await dennerSupabase
         .from('inventory_flats')
         .select(`
-          id, title, monthly_rent, deposit, locality, city, bhk, society_name,
+          id, flat_code, title, monthly_rent, deposit, locality, city, bhk, society_name,
           owner_phone, source_phone, handler_whatsapp_number, business_status,
           created_at, updated_at,
           inventory_flat_media ( id, storage_path, public_url, sort_order, media_type, is_cover )

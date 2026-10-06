@@ -8,7 +8,7 @@ async function fetchPropertyMap(propertyIds) {
   const { data: flats, error } = await dennerSupabase
     .from('inventory_flats')
     .select(`
-      id, title, locality,
+      id, flat_code, title, society_name, locality,
       inventory_flat_media ( public_url, sort_order, media_type, is_cover )
     `)
     .in('id', propertyIds)
@@ -27,7 +27,8 @@ async function fetchPropertyMap(propertyIds) {
 
     map.set(flat.id, {
       id:       flat.id,
-      title:    flat.title,
+      title:    flat.society_name || flat.title || '',
+      code:     flat.flat_code || '',
       locality: flat.locality,
       photos,
     })
