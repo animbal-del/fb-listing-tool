@@ -331,7 +331,7 @@ async function getNextItem() {
 
     const { data, error } = await supabase
       .from('post_queue')
-      .select('id, campaign_id, duplicate_warned, status, assigned_bot_id, property_id, groups(id,name,fb_url)')
+      .select('id, campaign_id, duplicate_warned, status, assigned_bot_id, property_id, message_text, groups(id,name,fb_url)')
       .eq('id', claimedId)
       .single()
 
@@ -339,6 +339,9 @@ async function getNextItem() {
       console.log(`   ⚠️ Fetch claimed item failed: ${error.message}`)
       return null
     }
+
+    // Message campaigns: post the text saved at launch exactly as written
+    if (data.message_text) return { ...data, properties: null, message: { text: data.message_text } }
 
     const flat = await fetchFlatForBot(data.property_id)
 
@@ -774,7 +777,11 @@ async function main() {
     }
 
     console.log(`\n📤 [${todayCount + 1}/${runtime.effectiveMaxPostsPerDay}] → ${item.groups.name}`)
-    console.log(`   Listing: ${item.properties.title}${item.properties.code ? ` (${item.properties.code})` : ''}`)
+    if (item.message) {
+      console.log(`   Message: ${messagePreview(item.message.text)}`)
+    } else {
+      console.log(`   Listing: ${item.properties?.title}${item.properties?.code ? ` (${item.properties.code})` : ''}`)
+    }
 
     page = await ensureLivePage()
 
@@ -879,10 +886,12 @@ async function postToGroup(page, item, uiProfile, isRetry = false) {
   // Once Post is clicked the listing may be live — never report failure or retry after that
   let postClicked = false
 
-  const text   = buildText(item)
+  const text   = item.message ? item.message.text.trim() : buildText(item)
   const propId = item.properties?.id
-  const media  = collectPropertyMedia(item.properties || {})
-  const propLabel  = `"${item.properties?.title || propId}${item.properties?.code ? ` ${item.properties.code}` : ''}" → ${item.groups?.name}`
+  const media  = item.message ? [] : collectPropertyMedia(item.properties || {})
+  const propLabel  = item.message
+    ? `"💬 ${messagePreview(item.message.text)}" → ${item.groups?.name}`
+    : `"${item.properties?.title || propId}${item.properties?.code ? ` ${item.properties.code}` : ''}" → ${item.groups?.name}`
 
   // Guard: skip post if there is no text to type
   if (!text || text.trim().length < 5) {
@@ -1340,6 +1349,11 @@ function buildText(item) {
   t = t.replace(/\{deposit\}/g, p.deposit ? '₹' + Number(p.deposit).toLocaleString('en-IN') : '')
   // Strip links (they send posts to admin approval); stored description is untouched
   return cleanPostText(t)
+}
+
+function messagePreview(text, max = 50) {
+  const first = String(text || '').split('\n').find(l => l.trim()) || ''
+  return first.length > max ? `${first.slice(0, max)}…` : first
 }
 
 function randomBetween(min, max) {

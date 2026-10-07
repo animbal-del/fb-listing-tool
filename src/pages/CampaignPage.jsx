@@ -2,15 +2,20 @@ import { useState, useMemo } from 'react'
 import { useProperties } from '../hooks/useProperties'
 import { useGroups }     from '../hooks/useGroups'
 import { useCampaigns }  from '../hooks/useCampaigns'
+import { useMessages }   from '../hooks/useMessages'
+import { messageTextsForGroups, canTweak, hasLink } from '../lib/messageTweaks'
 import { supabase }      from '../lib/supabase'
 import { DnrTag, matchesFlatSearch } from '../lib/flatCode'
 import { useNavigate, useLocation }   from 'react-router-dom'
 import {
   CheckSquare, Square, AlertTriangle, ChevronRight,
-  Loader2, Search, MapPin
+  Loader2, Search, MapPin, Home, MessageSquare, Plus, ChevronDown, ChevronUp
 } from 'lucide-react'
 
-const STEPS = ['Select Listings', 'Select Groups', 'Review Queue', 'Settings & Launch']
+const STEPS = {
+  listing: ['Select Listings', 'Select Groups', 'Review Queue', 'Settings & Launch'],
+  message: ['Select Message', 'Select Groups', 'Review Queue', 'Settings & Launch'],
+}
 
 export default function CampaignPage() {
   const navigate = useNavigate()
@@ -18,10 +23,18 @@ export default function CampaignPage() {
   const { properties } = useProperties()
   const { groups }     = useGroups()
   const { createCampaign } = useCampaigns()
+  const { messages, loading: messagesLoading } = useMessages()
   const duplicateCampaign = location.state?.duplicateCampaign || null
+  const initialMessageId  = duplicateCampaign?.messageId || location.state?.messageId || null
+  const initialMode       = duplicateCampaign?.campaignType || (initialMessageId ? 'message' : 'listing')
+
+  const [mode, setMode]                       = useState(initialMode)
+  const [selectedMessageId, setSelectedMessageId] = useState(initialMessageId)
+  const [messageSearch, setMessageSearch]     = useState('')
+  const [expandedRow, setExpandedRow]         = useState(null)
 
   const [step, setStep]             = useState(duplicateCampaign ? 2 : 0)
-  const [selectedProps, setSelectedProps]   = useState(() => new Set(duplicateCampaign?.queueItems?.map(item => item.property_id) || []))
+  const [selectedProps, setSelectedProps]   = useState(() => new Set(duplicateCampaign?.queueItems?.map(item => item.property_id).filter(Boolean) || []))
   const [selectedGroups, setSelectedGroups] = useState(() => new Set(duplicateCampaign?.queueItems?.map(item => item.group_id) || []))
   const [dupWarnings, setDupWarnings]       = useState(() => {
     const map = {}
@@ -42,7 +55,7 @@ export default function CampaignPage() {
   const [postsPerDay, setPostsPerDay] = useState(duplicateCampaign?.postsPerDay ?? 18)
   const [startHour,   setStartHour]   = useState(duplicateCampaign?.startHour ?? 9)
   const [endHour,     setEndHour]     = useState(duplicateCampaign?.endHour ?? 20)
-  const [jitter,      setJitter]      = useState(duplicateCampaign?.jitter ?? false)
+  const [jitter,      setJitter]      = useState(duplicateCampaign?.jitter ?? initialMode === 'message')
   const [launching,   setLaunching]   = useState(false)
   const [error,       setError]       = useState('')
 
@@ -74,7 +87,29 @@ export default function CampaignPage() {
   const clearAllProps  = () => setSelectedProps(new Set())
   const clearAllGroups = () => setSelectedGroups(new Set())
 
+  const switchMode = (next) => {
+    if (next === mode) return
+    setMode(next)
+    setJitter(next === 'message') // group variations on by default for messages
+    setExpandedRow(null)
+  }
+
+  const selectedMessage  = messages.find(m => m.id === selectedMessageId) || null
+  const filteredMessages = messages.filter(m => {
+    const q = messageSearch.trim().toLowerCase()
+    return !q || m.title.toLowerCase().includes(q) || m.body.toLowerCase().includes(q)
+  })
+
   const queueItems = useMemo(() => {
+    if (mode === 'message') {
+      if (!selectedMessage) return []
+      // Stable group order (by name) so each group's variation is predictable
+      const gids  = groups.filter(g => selectedGroups.has(g.id)).map(g => g.id)
+      const texts = messageTextsForGroups(selectedMessage.body, gids.length, jitter)
+      return gids.map((gid, i) => ({
+        property_id: null, group_id: gid, message_text: texts[i], variation: i, duplicate_warned: false,
+      }))
+    }
     const items = []
     for (const pid of selectedProps) {
       for (const gid of selectedGroups) {
@@ -82,7 +117,7 @@ export default function CampaignPage() {
       }
     }
     return items
-  }, [selectedProps, selectedGroups, dupWarnings])
+  }, [mode, selectedMessage, groups, jitter, selectedProps, selectedGroups, dupWarnings])
 
   const checkDuplicates = async () => {
     const warnings = {}
@@ -98,14 +133,20 @@ export default function CampaignPage() {
   }
 
   const goToStep = async (next) => {
-    if (next === 2) await checkDuplicates()
+    if (next === 2 && mode === 'listing') await checkDuplicates()
     setStep(next)
   }
 
   const launch = async () => {
     setError(''); setLaunching(true)
     try {
-      await createCampaign({ notes, postsPerDay, startHour, endHour, jitter, queueItems })
+      await createCampaign({
+        notes: notes.trim() || (mode === 'message' ? selectedMessage?.title || '' : ''),
+        postsPerDay, startHour, endHour, jitter, queueItems,
+        campaignType: mode,
+        messageId:    mode === 'message' ? selectedMessage?.id || null : null,
+        messageTitle: mode === 'message' ? selectedMessage?.title || null : null,
+      })
       navigate('/dashboard')
     } catch (err) { setError(err.message) }
     finally { setLaunching(false) }
@@ -126,7 +167,7 @@ export default function CampaignPage() {
 
       {/* Step indicator */}
       <div className="flex items-center gap-2 mb-8 flex-wrap">
-        {STEPS.map((s, i) => (
+        {STEPS[mode].map((s, i) => (
           <div key={i} className="flex items-center gap-2">
             <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
               i === step ? 'bg-flame-500/20 text-flame-400 border border-flame-500/30'
@@ -137,13 +178,82 @@ export default function CampaignPage() {
               </span>
               {s}
             </div>
-            {i < STEPS.length - 1 && <ChevronRight size={14} className="text-ink-600"/>}
+            {i < STEPS[mode].length - 1 && <ChevronRight size={14} className="text-ink-600"/>}
           </div>
         ))}
       </div>
 
-      {/* ── STEP 0 — Select Listings ── */}
+      {/* Campaign type */}
       {step === 0 && (
+        <div className="flex items-center gap-1 p-1 mb-6 rounded-xl bg-ink-800 border border-ink-700 w-fit">
+          {[['listing', Home, 'Listings'], ['message', MessageSquare, 'Message']].map(([key, Icon, label]) => (
+            <button key={key} onClick={() => switchMode(key)}
+              className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                mode === key ? 'bg-flame-500 text-white' : 'text-ink-400 hover:text-ink-200'}`}>
+              <Icon size={14}/> {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* ── STEP 0 — Select Message ── */}
+      {step === 0 && mode === 'message' && (
+        <div>
+          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+            <p className="text-sm text-ink-400">Pick the message to post</p>
+            <button onClick={() => navigate('/messages')} className="text-sm text-flame-400 hover:text-flame-300 flex items-center gap-1">
+              <Plus size={14}/> Write a new message
+            </button>
+          </div>
+
+          <div className="relative mb-4 max-w-xs">
+            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-500"/>
+            <input className="input pl-9 text-sm" placeholder="Search messages…"
+              value={messageSearch} onChange={e => setMessageSearch(e.target.value)}/>
+          </div>
+
+          {messagesLoading ? (
+            <div className="card p-8 text-center text-ink-500 text-sm">Loading messages…</div>
+          ) : messages.length === 0 ? (
+            <div className="card p-8 text-center text-sm">
+              <p className="text-ink-300">No saved messages yet.</p>
+              <button onClick={() => navigate('/messages')} className="btn-primary mx-auto mt-3"><Plus size={15}/> Write a message</button>
+            </div>
+          ) : filteredMessages.length === 0 ? (
+            <div className="card p-8 text-center text-ink-500 text-sm">No messages match your search</div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-6">
+              {filteredMessages.map(m => {
+                const sel = selectedMessageId === m.id
+                return (
+                  <div key={m.id} onClick={() => setSelectedMessageId(m.id)}
+                    className={`card p-4 cursor-pointer transition-all select-none ${sel ? 'border-flame-500/50 bg-flame-500/5' : 'hover:border-ink-600'}`}>
+                    <div className="flex items-start gap-3">
+                      <span className={`w-4 h-4 rounded-full border-2 shrink-0 mt-0.5 ${sel ? 'border-flame-400 bg-flame-400' : 'border-ink-500'}`}/>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-ink-100 truncate">{m.title}</p>
+                        <p className="text-xs text-ink-400 mt-1 whitespace-pre-wrap line-clamp-3">{m.body}</p>
+                        {hasLink(m.body) && (
+                          <p className="text-[11px] text-yellow-500 mt-1.5 flex items-center gap-1"><AlertTriangle size={11}/> Contains a link — some groups may hold it for approval</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          <StickyBar info={selectedMessage ? `💬 ${selectedMessage.title}` : 'No message selected'}>
+            <button className="btn-primary" disabled={!selectedMessage} onClick={() => setStep(1)}>
+              Next: Select Groups <ChevronRight size={15}/>
+            </button>
+          </StickyBar>
+        </div>
+      )}
+
+      {/* ── STEP 0 — Select Listings ── */}
+      {step === 0 && mode === 'listing' && (
         <div>
           <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
             <p className="text-sm text-ink-400">{selectedProps.size} selected</p>
@@ -284,7 +394,12 @@ export default function CampaignPage() {
       {step === 2 && (
         <div>
           <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-            <p className="text-sm text-ink-400">{queueItems.length} posts queued</p>
+            <p className="text-sm text-ink-400">
+              {queueItems.length} posts queued
+              {mode === 'message' && (jitter
+                ? (selectedMessage && canTweak(selectedMessage.body) ? ' · each group gets a small variation — click a row to preview' : ' · no variations possible for this text')
+                : ' · group variations off — every group gets the exact text')}
+            </p>
             {dupCount > 0 && (
               <div className="flex items-center gap-1.5 text-sm text-yellow-400">
                 <AlertTriangle size={14}/> {dupCount} duplicate warning{dupCount > 1 ? 's' : ''}
@@ -295,13 +410,35 @@ export default function CampaignPage() {
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-ink-800 border-b border-ink-700">
                 <tr>
-                  <th className="text-left px-4 py-2.5 text-xs font-medium text-ink-400 uppercase tracking-wider">Property</th>
+                  <th className="text-left px-4 py-2.5 text-xs font-medium text-ink-400 uppercase tracking-wider">{mode === 'message' ? 'Message' : 'Property'}</th>
                   <th className="text-left px-4 py-2.5 text-xs font-medium text-ink-400 uppercase tracking-wider">Group</th>
                   <th className="px-4 py-2.5"/>
                 </tr>
               </thead>
               <tbody className="divide-y divide-ink-700/50">
-                {queueItems.map((item, i) => {
+                {mode === 'message' ? queueItems.map((item, i) => {
+                  const open = expandedRow === i
+                  const varied = item.message_text !== selectedMessage?.body
+                  return [
+                    <tr key={i} onClick={() => setExpandedRow(open ? null : i)} className="cursor-pointer hover:bg-ink-800/30">
+                      <td className="px-4 py-2.5 text-ink-200">
+                        💬 {selectedMessage?.title}
+                        <span className="ml-2 text-xs text-ink-500">{varied ? `Variation ${item.variation + 1}` : 'Original'}</span>
+                      </td>
+                      <td className="px-4 py-2.5 text-ink-400">{groupMap[item.group_id]?.name}</td>
+                      <td className="px-4 py-2.5 text-right text-xs text-ink-500">
+                        {open ? <span className="inline-flex items-center gap-1">Hide <ChevronUp size={12}/></span> : <span className="inline-flex items-center gap-1">Preview <ChevronDown size={12}/></span>}
+                      </td>
+                    </tr>,
+                    open && (
+                      <tr key={`${i}-text`} className="bg-ink-950/60">
+                        <td colSpan={3} className="px-4 py-3">
+                          <p className="text-xs text-ink-200 whitespace-pre-wrap leading-relaxed">{item.message_text}</p>
+                        </td>
+                      </tr>
+                    ),
+                  ]
+                }) : queueItems.map((item, i) => {
                   const isDup = dupWarnings[`${item.property_id}-${item.group_id}`]
                   return (
                     <tr key={i} className={isDup ? 'bg-yellow-500/5' : ''}>
@@ -332,7 +469,7 @@ export default function CampaignPage() {
           <div className="card p-6 space-y-5 mb-6">
             <div>
               <label className="label">Campaign Notes (optional)</label>
-              <input className="input" placeholder="e.g. March week 1 — Pune groups"
+              <input className="input" placeholder={mode === 'message' ? `Defaults to "${selectedMessage?.title || 'message title'}"` : "e.g. March week 1 — Pune groups"}
                 value={notes} onChange={e => setNotes(e.target.value)}/>
             </div>
             <div className="grid grid-cols-2 gap-4">
@@ -356,8 +493,12 @@ export default function CampaignPage() {
             </div>
             <div className="flex items-center justify-between py-2 border-t border-ink-700">
               <div>
-                <p className="text-sm font-medium text-ink-200">Text Jitter</p>
-                <p className="text-xs text-ink-500">Slightly vary each post to avoid detection</p>
+                <p className="text-sm font-medium text-ink-200">{mode === 'message' ? 'Group Variations' : 'Text Jitter'}</p>
+                <p className="text-xs text-ink-500">
+                  {mode === 'message'
+                    ? 'Vary emojis, greeting, closing line and bullets per group'
+                    : 'Slightly vary each post to avoid detection'}
+                </p>
               </div>
               <button onClick={() => setJitter(j => !j)}
                 className={`w-11 h-6 rounded-full transition-colors relative ${jitter ? 'bg-flame-500' : 'bg-ink-700'}`}>

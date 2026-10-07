@@ -4,6 +4,7 @@ import Layout from './components/Layout'
 import LoginPage from './pages/LoginPage'
 import PropertiesPage from './pages/PropertiesPage'
 import GroupsPage     from './pages/GroupsPage'
+import MessagesPage   from './pages/MessagesPage'
 import CampaignPage   from './pages/CampaignPage'
 import DashboardPage  from './pages/DashboardPage'
 
@@ -31,6 +32,7 @@ function AppRoutes() {
       <Route path="/login" element={user ? <Navigate to="/properties" replace /> : <LoginPage />} />
       <Route path="/properties" element={<ProtectedRoute><PropertiesPage /></ProtectedRoute>} />
       <Route path="/groups"     element={<ProtectedRoute><GroupsPage /></ProtectedRoute>} />
+      <Route path="/messages"   element={<ProtectedRoute><MessagesPage /></ProtectedRoute>} />
       <Route path="/campaign"   element={<ProtectedRoute><CampaignPage /></ProtectedRoute>} />
       <Route path="/dashboard"  element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
       <Route path="*"           element={<Navigate to={user ? "/properties" : "/login"} replace />} />

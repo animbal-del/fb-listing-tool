@@ -59,6 +59,7 @@ export function useCampaigns() {
             assigned_bot_id,
             claimed_at,
             duplicate_warned,
+            message_text,
             groups ( id, name, fb_url )
           )
         `)
@@ -130,7 +131,10 @@ export function useCampaigns() {
     fetch()
   }, [fetch])
 
-  const createCampaign = async ({ notes, postsPerDay, startHour, endHour, jitter, queueItems }) => {
+  const createCampaign = async ({
+    notes, postsPerDay, startHour, endHour, jitter, queueItems,
+    campaignType = 'listing', messageId = null, messageTitle = null,
+  }) => {
     const { data: campaign, error: ce } = await supabase
       .from('campaigns')
       .insert([{
@@ -141,6 +145,9 @@ export function useCampaigns() {
         posting_end_hour:     endHour,
         jitter_enabled:       jitter,
         status:               'active',
+        campaign_type:        campaignType,
+        message_id:           messageId,
+        message_title:        messageTitle,
       }])
       .select()
       .single()
@@ -164,7 +171,8 @@ export function useCampaigns() {
     for (let i = 0; i < queueItems.length; i++) {
       scheduledItems.push({
         campaign_id:      campaign.id,
-        property_id:      queueItems[i].property_id,
+        property_id:      queueItems[i].property_id ?? null,
+        message_text:     queueItems[i].message_text ?? null,
         group_id:         queueItems[i].group_id,
         scheduled_at:     cursor.toISOString(),
         duplicate_warned: queueItems[i].duplicate_warned || false,

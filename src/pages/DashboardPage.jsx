@@ -10,7 +10,7 @@ import {
   Pause, Play, Download, RefreshCw, ChevronDown, ChevronUp,
   Copy, Check, Bot, Plus, Trash2, Eye, EyeOff, Edit2,
   LogIn, Square, Zap, AlertTriangle, Terminal,
-  CheckCircle, Wifi, WifiOff, Clock, XCircle, ImageOff, ListPlus, CopyPlus, ExternalLink
+  CheckCircle, Wifi, WifiOff, Clock, XCircle, ImageOff, ListPlus, CopyPlus, ExternalLink, MessageSquare
 } from 'lucide-react'
 
 const BOT_API = (import.meta.env.VITE_BOT_SERVER_URL || '/bot-api').replace(/\/$/, '')
@@ -187,7 +187,7 @@ const STATUS_ROW = {
   pending: 'hover:bg-ink-800/30 opacity-60',
 }
 
-function PostActivityLog({ items }) {
+function PostActivityLog({ items, messageTitle }) {
   const [filter, setFilter] = useState('all')
   const filters = ['all', 'posted', 'failed', 'pending']
   const visible = filter === 'all' ? items : items.filter(i => i.status === filter)
@@ -258,19 +258,30 @@ function PostActivityLog({ items }) {
                   </td>
                   <td className="px-4 py-2.5">
                     <div className="flex items-center gap-2">
-                      {item.properties?.photos?.[0] ? (
+                      {item.message_text ? (
+                        <div className="w-7 h-7 rounded bg-flame-500/10 flex items-center justify-center flex-shrink-0">
+                          <MessageSquare size={11} className="text-flame-400" />
+                        </div>
+                      ) : item.properties?.photos?.[0] ? (
                         <img src={item.properties.photos[0]} className="w-7 h-7 rounded object-cover flex-shrink-0" alt="" />
                       ) : (
                         <div className="w-7 h-7 rounded bg-ink-700 flex items-center justify-center flex-shrink-0">
                           <ImageOff size={10} className="text-ink-600" />
                         </div>
                       )}
-                      <div>
-                        <p className="text-ink-200 font-medium leading-tight">
-                          {item.properties?.title || '—'} <DnrTag code={item.properties?.code} className="ml-1" />
-                        </p>
-                        {item.properties?.locality && <p className="text-ink-600 text-xs">{item.properties.locality}</p>}
-                      </div>
+                      {item.message_text ? (
+                        <div className="min-w-0" title={item.message_text}>
+                          <p className="text-ink-200 font-medium leading-tight truncate max-w-[220px]">{messageTitle || 'Message'}</p>
+                          <p className="text-ink-600 text-xs truncate max-w-[220px]">{item.message_text.split('\n').find(l => l.trim())}</p>
+                        </div>
+                      ) : (
+                        <div>
+                          <p className="text-ink-200 font-medium leading-tight">
+                            {item.properties?.title || '—'} <DnrTag code={item.properties?.code} className="ml-1" />
+                          </p>
+                          {item.properties?.locality && <p className="text-ink-600 text-xs">{item.properties.locality}</p>}
+                        </div>
+                      )}
                     </div>
                   </td>
                   <td className="px-4 py-2.5 text-ink-400 max-w-[180px]">
@@ -332,7 +343,7 @@ function CampaignRow({ campaign, onToggle, onRetryFailed, onDelete, onDuplicate 
     const rows = items
       .map(
         q =>
-          `"${q.properties?.title || ''}","${q.groups?.name || ''}","${q.assigned_bot_name || q.assigned_bot_id || ''}","${q.status}","${q.scheduled_at || ''}","${q.posted_at || ''}","${q.post_url || ''}","${q.error_log || ''}"`
+          `"${q.message_text ? `Message: ${campaign.message_title || ''}` : q.properties?.title || ''}","${q.groups?.name || ''}","${q.assigned_bot_name || q.assigned_bot_id || ''}","${q.status}","${q.scheduled_at || ''}","${q.posted_at || ''}","${q.post_url || ''}","${q.error_log || ''}"`
       )
       .join('\n')
     const blob = new Blob(['property,group,bot,status,scheduled_at,posted_at,post_url,error\n' + rows], { type: 'text/csv' })
@@ -367,8 +378,13 @@ function CampaignRow({ campaign, onToggle, onRetryFailed, onDelete, onDuplicate 
                 {new Date(campaign.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
               </span>
               <CopyBtn value={campaign.id} label={`ID: ${campaign.id.slice(0, 8)}…`} />
+              {campaign.campaign_type === 'message' && (
+                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-flame-300 bg-flame-500/10 border border-flame-500/20 rounded-full px-2 py-0.5">
+                  <MessageSquare size={10} /> Message
+                </span>
+              )}
             </div>
-            <p className="text-sm font-medium text-ink-100">{campaign.notes || 'Untitled Campaign'}</p>
+            <p className="text-sm font-medium text-ink-100">{campaign.notes || campaign.message_title || 'Untitled Campaign'}</p>
             {failed > 0 && (
               <p className="text-xs text-flame-400 mt-1 flex items-center gap-1">
                 <XCircle size={11} /> {failed} post{failed > 1 ? 's' : ''} failed — retry available
@@ -422,7 +438,7 @@ function CampaignRow({ campaign, onToggle, onRetryFailed, onDelete, onDuplicate 
         </div>
         <ProgressBar total={items.length} posted={posted} failed={failed} skipped={skipped} />
       </div>
-      {expanded && <PostActivityLog items={items} />}
+      {expanded && <PostActivityLog items={items} messageTitle={campaign.message_title} />}
     </div>
   )
 }
@@ -826,7 +842,7 @@ function StartBotModal({ open, bot, campaigns, onClose, onConfirm }) {
                   }`}
                 >
                   <div className="flex items-center justify-between">
-                    <p className="text-sm font-medium text-ink-200">{c.notes || 'Untitled Campaign'}</p>
+                    <p className="text-sm font-medium text-ink-200">{c.campaign_type === 'message' && '💬 '}{c.notes || c.message_title || 'Untitled Campaign'}</p>
                     {selected === c.id && <Check size={14} className="text-flame-400" />}
                   </div>
                   <p className="text-xs text-ink-500 mt-0.5">
@@ -916,7 +932,7 @@ function CampaignQueueModal({ open, bot, campaigns, onClose }) {
                   <div key={cid} className="flex items-center gap-2 bg-ink-800 border border-ink-700 rounded-xl px-3 py-2">
                     <span className="text-ink-600 text-xs w-5 flex-shrink-0">{i + 1}.</span>
                     <div className="flex-1 min-w-0">
-                      <p className="text-xs font-medium text-ink-200 truncate">{c?.notes || cid.slice(0, 8) + '…'}</p>
+                      <p className="text-xs font-medium text-ink-200 truncate">{c?.campaign_type === 'message' && '💬 '}{c?.notes || c?.message_title || cid.slice(0, 8) + '…'}</p>
                       <p className="text-xs text-ink-600">
                         {pending} pending · {posted} posted
                       </p>
@@ -954,7 +970,7 @@ function CampaignQueueModal({ open, bot, campaigns, onClose }) {
                       className="flex items-center justify-between px-3 py-2 bg-ink-900 border border-ink-700 rounded-xl cursor-pointer hover:border-flame-500/50 hover:bg-flame-500/5 transition-all"
                     >
                       <div>
-                        <p className="text-xs font-medium text-ink-200">{c.notes || 'Untitled'}</p>
+                        <p className="text-xs font-medium text-ink-200">{c.campaign_type === 'message' && '💬 '}{c.notes || c.message_title || 'Untitled'}</p>
                         <p className="text-xs text-ink-600">{pending} pending posts</p>
                       </div>
                       <Plus size={13} className="text-flame-400 flex-shrink-0" />
@@ -1322,6 +1338,30 @@ export default function DashboardPage() {
 
   const handleDuplicate = (campaign) => {
     const items = campaign.post_queue || []
+
+    if (campaign.campaign_type === 'message') {
+      if (!campaign.message_id) {
+        alert('The message for this campaign was deleted — create a new message campaign from the Messages tab.')
+        return
+      }
+      navigate('/campaign', {
+        state: {
+          duplicateCampaign: {
+            sourceCampaignId: campaign.id,
+            campaignType: 'message',
+            messageId: campaign.message_id,
+            notes: campaign.notes || '',
+            postsPerDay: campaign.posts_per_day_limit ?? 18,
+            startHour: campaign.posting_start_hour ?? 9,
+            endHour: campaign.posting_end_hour ?? 20,
+            jitter: !!campaign.jitter_enabled,
+            queueItems: items.map(item => ({ group_id: item.group_id || item.groups?.id })).filter(item => item.group_id),
+          },
+        },
+      })
+      return
+    }
+
     const queueItems = items
       .map(item => ({
         property_id: item.property_id || item.properties?.id,

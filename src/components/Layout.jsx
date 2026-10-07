@@ -1,10 +1,11 @@
 import { NavLink } from 'react-router-dom'
 import { useAuth } from '../lib/AuthContext'
-import { Home, Users, Megaphone, LayoutDashboard, LogOut } from 'lucide-react'
+import { Home, Users, Megaphone, LayoutDashboard, LogOut, MessageSquare } from 'lucide-react'
 
 const NAV = [
   { to: '/properties', icon: Home,           label: 'Properties'   },
   { to: '/groups',     icon: Users,           label: 'Groups'       },
+  { to: '/messages',   icon: MessageSquare,   label: 'Messages'     },
   { to: '/campaign',   icon: Megaphone,       label: 'New Campaign' },
   { to: '/dashboard',  icon: LayoutDashboard, label: 'Dashboard'    },
 ]
