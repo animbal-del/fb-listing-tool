@@ -3,6 +3,61 @@ import { useGroups } from '../hooks/useGroups'
 import Modal from '../components/Modal'
 import { Plus, Search, Pencil, Trash2, Upload, ExternalLink, Users, ToggleLeft, ToggleRight, AlertCircle, RefreshCw } from 'lucide-react'
 
+// ── CSV import ────────────────────────────────────────────
+// Columns are matched by header name (any order). member_count accepts
+// "3000", "3,000", "3.0K", "12.5k", "1.2M" (as Facebook shows them).
+function parseCsvLine(line) {
+  const out = []
+  let cur = '', quoted = false
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]
+    if (quoted) {
+      if (c === '"' && line[i + 1] === '"') { cur += '"'; i++ }
+      else if (c === '"') quoted = false
+      else cur += c
+    } else if (c === '"') quoted = true
+    else if (c === ',') { out.push(cur.trim()); cur = '' }
+    else cur += c
+  }
+  out.push(cur.trim())
+  return out
+}
+
+function parseMemberCount(value) {
+  const m = String(value ?? '').replace(/,/g, '').trim().match(/^(\d+(?:\.\d+)?)\s*([kKmM])?/)
+  if (!m) return null
+  const n = parseFloat(m[1]) * (/k/i.test(m[2] || '') ? 1e3 : /m/i.test(m[2] || '') ? 1e6 : 1)
+  return Math.round(n)
+}
+
+const CSV_COLUMNS = {
+  name:         ['name', 'group name', 'group_name', 'group'],
+  fb_url:       ['fb_url', 'url', 'facebook url', 'group url', 'link'],
+  locality_tag: ['locality_tag', 'locality', 'area', 'locality tag'],
+  member_count: ['member_count', 'members', 'member count', 'member_count ', 'membercount'],
+}
+
+function parseGroupsCsv(text) {
+  const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).filter(l => l.trim())
+  if (lines.length < 2) return []
+  const header = parseCsvLine(lines[0]).map(h => h.toLowerCase().trim())
+  const idx = {}
+  for (const [key, names] of Object.entries(CSV_COLUMNS)) idx[key] = header.findIndex(h => names.includes(h))
+  // No recognisable header → fall back to positional: name, fb_url, locality_tag, member_count
+  if (idx.name < 0 || idx.fb_url < 0) Object.assign(idx, { name: 0, fb_url: 1, locality_tag: 2, member_count: 3 })
+
+  return lines.slice(1).map(line => {
+    const cols = parseCsvLine(line)
+    const get = key => (idx[key] >= 0 ? cols[idx[key]] || '' : '')
+    return {
+      name:         get('name'),
+      fb_url:       get('fb_url'),
+      locality_tag: get('locality_tag') || null,
+      member_count: parseMemberCount(get('member_count')),
+    }
+  }).filter(r => r.name && r.fb_url)
+}
+
 // ── Group form (add / edit) ───────────────────────────────
 function GroupForm({ initial = {}, onSave, onCancel }) {
   const [form, setForm] = useState({
@@ -89,14 +144,10 @@ export default function GroupsPage() {
     const file = e.target.files[0]; if (!file) return
     setImporting(true)
     try {
-      const text  = await file.text()
-      const lines = text.trim().split('\n').slice(1)
-      const rows  = lines.map(l => {
-        const [name, fb_url, locality_tag] = l.split(',').map(s => s.trim().replace(/^"|"$/g, ''))
-        return { name, fb_url, locality_tag: locality_tag || null }
-      }).filter(r => r.name && r.fb_url)
-      if (!rows.length) return alert('No valid rows found. Format: name, fb_url, locality_tag')
-      await bulkImport(rows)
+      const rows = parseGroupsCsv(await file.text())
+      if (!rows.length) return alert('No valid rows found. Columns: name, fb_url, locality_tag, member_count')
+      const { added, updated, unchanged } = await bulkImport(rows)
+      alert(`Import done — ${added} added, ${updated} updated${unchanged ? `, ${unchanged} already up to date` : ''}`)
     } catch (err) {
       alert('Import failed: ' + err.message)
     } finally {
@@ -142,7 +193,7 @@ export default function GroupsPage() {
 
       {/* CSV hint */}
       <div className="mb-5 px-4 py-3 rounded-lg bg-ink-800 border border-ink-700 text-xs text-ink-400">
-        CSV format: <span className="font-mono text-ink-300">name, fb_url, locality_tag</span> — one group per row, header row required
+        CSV format: <span className="font-mono text-ink-300">name, fb_url, locality_tag, member_count</span> — one group per row, header row required. member_count is optional (e.g. 3000 or 3.0K). Groups already in the list are updated, not duplicated.
       </div>
 
       {/* Error banner */}
