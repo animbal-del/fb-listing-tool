@@ -496,6 +496,17 @@ app.get('/bots/:id/logs', (req, res) => {
   })
 })
 
+// Login ID + password for one bot — dashboard users only (requireUser on /bots);
+// the browser's public key cannot read fb_password directly.
+app.get('/bots/:id/credentials', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store')
+  const { data, error } = await db(sb =>
+    sb.from('bot_accounts').select('fb_email, fb_password').eq('id', req.params.id).single()
+  )
+  if (error || !data) return res.status(404).json({ error: error?.message || 'Bot not found' })
+  res.json({ fb_email: data.fb_email || '', fb_password: data.fb_password || '' })
+})
+
 app.get('/bots/:id/queue', (req, res) => res.json({ queue: botQueues[req.params.id] || [] }))
 
 app.delete('/bots/:id/queue', (req, res) => {

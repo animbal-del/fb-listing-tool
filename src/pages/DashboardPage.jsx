@@ -130,6 +130,64 @@ async function setBotQueue(id, campaignIds) {
   })
 }
 
+async function getBotCredentials(id) {
+  return await apiFetch(`/bots/${id}/credentials`, { headers: {} })
+}
+
+function BotPassword({ botId, serverOnline }) {
+  const [password, setPassword] = useState(null)
+  const [visible, setVisible]   = useState(false)
+  const [busy, setBusy]         = useState(false)
+  const [copied, setCopied]     = useState(false)
+  const [error, setError]       = useState('')
+
+  const load = async () => {
+    if (password !== null) return password
+    setBusy(true); setError('')
+    try {
+      const data = await getBotCredentials(botId)
+      setPassword(data.fb_password || '')
+      return data.fb_password || ''
+    } catch (err) {
+      setError(serverOnline ? 'Could not load' : 'Bot server offline')
+      return null
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const toggle = async () => {
+    if (visible) return setVisible(false)
+    if ((await load()) !== null) setVisible(true)
+  }
+
+  const copy = async () => {
+    const pw = await load()
+    if (!pw) return
+    try {
+      await navigator.clipboard.writeText(pw)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {}
+  }
+
+  return (
+    <div className="flex items-center gap-1.5 text-xs text-ink-500 min-w-0">
+      <span className="shrink-0">Password:</span>
+      <span className="font-mono text-ink-400 truncate">{visible && password !== null ? password || '(none saved)' : '••••••••'}</span>
+      <button type="button" onClick={toggle} disabled={busy} title={visible ? 'Hide password' : 'Show password'}
+        className="p-0.5 text-ink-600 hover:text-ink-300 shrink-0">
+        {busy ? <span className="animate-spin inline-block">⟳</span> : visible ? <EyeOff size={12} /> : <Eye size={12} />}
+      </button>
+      <button type="button" onClick={copy} disabled={busy} title="Copy password"
+        className="p-0.5 text-ink-600 hover:text-ink-300 shrink-0">
+        {copied ? <Check size={12} className="text-jade-400" /> : <Copy size={12} />}
+      </button>
+      {error && <span className="text-flame-400 shrink-0">{error}</span>}
+    </div>
+  )
+}
+
 async function getBotQueue(id) {
   return await apiFetch(`/bots/${id}/queue`, { headers: {} })
 }
@@ -488,6 +546,18 @@ function BotFormInner({ initial, isEdit, onClose, onSaved }) {
 
   const [form, setForm] = useState(isEdit ? { ...defaults, ...initial } : defaults)
   const [showPw, setShowPw] = useState(false)
+
+  // Fill in the saved password when editing (read via the bot server, logged-in only)
+  useEffect(() => {
+    if (!isEdit || !initial?.id) return
+    let cancelled = false
+    getBotCredentials(initial.id)
+      .then(data => {
+        if (!cancelled && data?.fb_password) setForm(f => (f.fb_password ? f : { ...f, fb_password: data.fb_password }))
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [isEdit, initial?.id])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [tab, setTab] = useState('account')
@@ -1062,6 +1132,7 @@ function BotCard({ bot, campaigns, serverOnline, onEdit, onDelete, onRefresh }) 
             <div className="min-w-0">
               <p className="text-sm font-semibold text-ink-100 truncate">{bot.name}</p>
               <p className="text-xs text-ink-500 truncate">{bot.fb_email}</p>
+              <BotPassword botId={bot.id} serverOnline={serverOnline} />
             </div>
           </div>
           <span className={`text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${sc.badge}`}>{sc.label}</span>
