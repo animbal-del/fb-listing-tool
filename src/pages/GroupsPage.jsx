@@ -58,6 +58,43 @@ function parseGroupsCsv(text) {
   }).filter(r => r.name && r.fb_url)
 }
 
+// ── Bot access (written by the bot while posting) ─────────
+const ACCESS_LABEL = {
+  not_member:        { label: 'Not joined',    cls: 'bg-ink-700 text-ink-300 border-ink-600' },
+  join_pending:      { label: 'Join requested', cls: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/25' },
+  needs_manual_join: { label: 'Join manually', cls: 'bg-flame-500/15 text-flame-400 border-flame-500/25' },
+  pending_limit:     { label: 'Pending limit', cls: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/25' },
+}
+
+function BotAccess({ rows }) {
+  if (!rows?.length) return <span className="text-ink-600">—</span>
+  const members = rows.filter(r => r.status === 'member')
+  const others = rows.filter(r => r.status !== 'member')
+  return (
+    <div className="flex flex-wrap gap-1">
+      {members.length > 0 && (
+        <span
+          className="px-2 py-0.5 rounded-full text-xs border bg-jade-500/15 text-jade-400 border-jade-500/25"
+          title={members.map(r => r.bot_name).join(', ')}
+        >
+          {members.length} joined
+        </span>
+      )}
+      {others.map(r => {
+        const a = ACCESS_LABEL[r.status] || ACCESS_LABEL.not_member
+        return (
+          <span key={r.bot_account_id} className={`px-2 py-0.5 rounded-full text-xs border ${a.cls}`} title={r.note || ''}>
+            {r.bot_name}: {a.label}
+          </span>
+        )
+      })}
+    </div>
+  )
+}
+
+const needsAttention = (g, rows) =>
+  g.disabled_reason === 'sale_form_only' || (rows || []).some(r => r.status === 'needs_manual_join')
+
 // ── Group form (add / edit) ───────────────────────────────
 function GroupForm({ initial = {}, onSave, onCancel }) {
   const [form, setForm] = useState({
@@ -123,8 +160,9 @@ function GroupForm({ initial = {}, onSave, onCancel }) {
 
 // ── Main page ─────────────────────────────────────────────
 export default function GroupsPage() {
-  const { groups, loading, error, refetch, create, update, remove, toggleActive, bulkImport } = useGroups()
+  const { groups, access, loading, error, refetch, create, update, remove, toggleActive, bulkImport } = useGroups()
   const [search,    setSearch]    = useState('')
+  const [attention, setAttention] = useState(false)
   const [locality,  setLocality]  = useState('all')
   const [showForm,  setShowForm]  = useState(false)
   const [editing,   setEditing]   = useState(null)
@@ -134,10 +172,15 @@ export default function GroupsPage() {
 
   const localities = ['all', ...new Set(groups.map(g => g.locality_tag).filter(Boolean))]
 
+  const accessByGroup = new Map()
+  for (const a of access) accessByGroup.set(a.group_id, [...(accessByGroup.get(a.group_id) || []), a])
+  const attentionCount = groups.filter(g => needsAttention(g, accessByGroup.get(g.id))).length
+
   const filtered = groups.filter(g => {
     const matchSearch   = !search   || g.name.toLowerCase().includes(search.toLowerCase())
     const matchLocality = locality === 'all' || g.locality_tag === locality
-    return matchSearch && matchLocality
+    const matchAttention = !attention || needsAttention(g, accessByGroup.get(g.id))
+    return matchSearch && matchLocality && matchAttention
   })
 
   const handleCSV = async (e) => {
@@ -215,6 +258,15 @@ export default function GroupsPage() {
           <input className="input pl-9" placeholder="Search groups…"
             value={search} onChange={e => setSearch(e.target.value)}/>
         </div>
+        <button onClick={() => setAttention(a => !a)}
+          title="Groups the bot turned off (Sell forms only) or that need a person to join them"
+          className={`px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
+            attention
+              ? 'bg-flame-500/15 border-flame-500/40 text-flame-300'
+              : 'bg-transparent border-ink-700 text-ink-400 hover:border-ink-500'
+          }`}>
+          Needs attention ({attentionCount})
+        </button>
         {localities.map(l => (
           <button key={l} onClick={() => setLocality(l)}
             className={`px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
@@ -251,6 +303,7 @@ export default function GroupsPage() {
                 <th className="text-left px-4 py-3 text-xs font-medium text-ink-400 uppercase tracking-wider">Group Name</th>
                 <th className="text-left px-4 py-3 text-xs font-medium text-ink-400 uppercase tracking-wider hidden md:table-cell">Locality</th>
                 <th className="text-left px-4 py-3 text-xs font-medium text-ink-400 uppercase tracking-wider hidden lg:table-cell">Members</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-ink-400 uppercase tracking-wider hidden md:table-cell">Bot Access</th>
                 <th className="text-left px-4 py-3 text-xs font-medium text-ink-400 uppercase tracking-wider">Active</th>
                 <th className="px-4 py-3"/>
               </tr>
@@ -268,10 +321,19 @@ export default function GroupsPage() {
                         <ExternalLink size={12}/>
                       </a>
                     </div>
+                    {g.disabled_reason === 'sale_form_only' && (
+                      <p className="text-xs text-flame-400 mt-0.5"
+                        title={g.disabled_at ? `Turned off ${new Date(g.disabled_at).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}` : ''}>
+                        Sell-form only — turned off by bot (no Discussion tab)
+                      </p>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-ink-400 hidden md:table-cell">{g.locality_tag || '—'}</td>
                   <td className="px-4 py-3 text-ink-400 hidden lg:table-cell">
                     {g.member_count?.toLocaleString() || '—'}
+                  </td>
+                  <td className="px-4 py-3 hidden md:table-cell">
+                    <BotAccess rows={accessByGroup.get(g.id)}/>
                   </td>
                   <td className="px-4 py-3">
                     <button onClick={() => toggleActive(g.id, g.active)} className="text-ink-400 hover:text-ink-200 transition-colors">

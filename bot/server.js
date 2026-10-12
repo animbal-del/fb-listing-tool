@@ -82,6 +82,9 @@ async function requireUser(req, res, next) {
   next()
 }
 
+// Matches bot.js: the account must log in to Facebook again
+const EXIT_NEEDS_LOGIN = 3
+
 const procs = {}
 const logSubs = {}
 const botQueues = {}
@@ -425,9 +428,15 @@ app.post('/bots/:id/start', async (req, res) => {
       p.stderr.on('data', d => String(d).split('\n').filter(Boolean).forEach(l => pushLog(id, `⚠️ ${l}`)))
 
       p.on('close', async code => {
-        pushLog(id, code === 0 ? '🎉 Campaign run ended' : `⚠️ Bot stopped (code ${code})`)
-
         if (procs[id]) procs[id].proc = null
+
+        // bot.js already set status 'needs_login' — keep it so the dashboard shows it
+        if (code === EXIT_NEEDS_LOGIN) {
+          pushLog(id, '🔐 Facebook logged this account out — use "Open Remote Re-login", then start again')
+          return
+        }
+
+        pushLog(id, code === 0 ? '🎉 Campaign run ended' : `⚠️ Bot stopped (code ${code})`)
 
         if (code !== 0) {
           await db(sb => sb.from('bot_accounts').update({ status: 'idle' }).eq('id', id))

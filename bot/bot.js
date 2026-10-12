@@ -34,9 +34,16 @@ let STOP_REQUESTED = false
 let CURRENT_CONTEXT = null
 let CURRENT_PAGE = null
 let COMPOSER_LOCATOR = null
+let BOT_NAME = 'This bot'
 let _cdTimer = null
 
 const EMPTY_QUEUE_POLL_MS = 60 * 1000
+
+// Joining many groups quickly gets accounts checkpointed — cap joins per bot per day
+const MAX_JOINS_PER_DAY = Number(process.env.MAX_JOINS_PER_DAY || 6)
+// Exit code that tells server.js the account must log in again (don't chain campaigns)
+const EXIT_NEEDS_LOGIN = 3
+const HOUR_MS = 60 * 60 * 1000
 
 process.on('SIGTERM', async () => {
   STOP_REQUESTED = true
@@ -376,6 +383,97 @@ async function getItemCounts() {
   }
 }
 
+// Put a claimed post back so any bot that can post in the group picks it up
+async function requeueItem(id, note) {
+  await dbUpdate('post_queue', id, {
+    status: 'pending',
+    error_log: note,
+    assigned_bot_id: null,
+    claimed_at: null,
+  })
+}
+
+// ── Group access (which bot can post in which group) ──────
+async function setGroupAccess(groupId, status, { retryMs = null, note = null, joined = false } = {}) {
+  if (!BOT_ACCOUNT_ID || !groupId) return
+  const now = new Date()
+  const row = {
+    bot_account_id: BOT_ACCOUNT_ID,
+    group_id: groupId,
+    status,
+    retry_after: retryMs ? new Date(now.getTime() + retryMs).toISOString() : null,
+    note,
+    updated_at: now.toISOString(),
+    ...(joined ? { joined_at: now.toISOString() } : {}),
+  }
+  try {
+    const { error } = await supabase.from('bot_group_access').upsert(row, { onConflict: 'bot_account_id,group_id' })
+    if (error) console.log(`   ⚠️ DB(bot_group_access) upsert: ${error.message}`)
+  } catch (e) {
+    console.log(`   ⚠️ DB(bot_group_access) upsert failed: ${e.message}`)
+  }
+}
+
+async function joinsToday() {
+  if (!BOT_ACCOUNT_ID) return 0
+  const dayStart = new Date()
+  dayStart.setHours(0, 0, 0, 0)
+  try {
+    const { count, error } = await supabase
+      .from('bot_group_access')
+      .select('group_id', { count: 'exact', head: true })
+      .eq('bot_account_id', BOT_ACCOUNT_ID)
+      .gte('joined_at', dayStart.toISOString())
+    return error ? MAX_JOINS_PER_DAY : count || 0 // unknown → assume cap reached
+  } catch {
+    return MAX_JOINS_PER_DAY
+  }
+}
+
+function msUntilTomorrow() {
+  const next = new Date()
+  next.setDate(next.getDate() + 1)
+  next.setHours(0, 5, 0, 0)
+  return next - Date.now()
+}
+
+// Turn a group off for everyone and skip its waiting posts in every campaign
+async function disableGroup(groupId, reason, note) {
+  await dbUpdate('groups', groupId, {
+    active: false,
+    disabled_reason: reason,
+    disabled_at: new Date().toISOString(),
+  })
+  try {
+    await supabase
+      .from('post_queue')
+      .update({ status: 'skipped', error_log: note })
+      .eq('group_id', groupId)
+      .eq('status', 'pending')
+  } catch {}
+}
+
+// True when every pending post in this campaign is in a group this bot must skip for now
+async function allPendingBlockedForMe() {
+  if (!BOT_ACCOUNT_ID) return false
+  try {
+    const [pendingRes, blockedRes] = await Promise.all([
+      supabase.from('post_queue').select('group_id').eq('campaign_id', CAMPAIGN_ID).eq('status', 'pending'),
+      supabase
+        .from('bot_group_access')
+        .select('group_id')
+        .eq('bot_account_id', BOT_ACCOUNT_ID)
+        .gt('retry_after', new Date().toISOString()),
+    ])
+    if (pendingRes.error || blockedRes.error) return false
+    const blocked = new Set((blockedRes.data || []).map(r => r.group_id))
+    const pending = pendingRes.data || []
+    return pending.length > 0 && pending.every(r => blocked.has(r.group_id))
+  } catch {
+    return false
+  }
+}
+
 async function markItem(id, status, errorLog = null, postUrl = null) {
   const payload = {
     status,
@@ -547,6 +645,36 @@ async function ensureLivePage() {
   return CURRENT_PAGE
 }
 
+// Login form, "Continue as <name>" screen or checkpoint — the session is gone
+async function isLoggedOut(page) {
+  if (/facebook\.com\/(login|checkpoint)\b/i.test(page.url())) return true
+  try {
+    return await page.evaluate(() => {
+      if (document.querySelector('input[name="pass"]')) return true
+      for (const el of document.querySelectorAll('[role="button"], button, a')) {
+        const t = (el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase()
+        if (t === 'use another profile' || t === 'create new account') return true
+      }
+      return false
+    })
+  } catch {
+    return false
+  }
+}
+
+// Stop instead of failing every post; the claimed post goes back to the queue
+async function stopForLogin(itemId = null) {
+  console.log('\n❌ Facebook logged this account out.')
+  console.log('   Use "Open Remote Re-login" in the dashboard, then start the bot again.')
+  if (itemId) await requeueItem(itemId, 'Waiting: the bot account was logged out of Facebook')
+  await safeCleanupRuntime()
+  cleanPhotoCache()
+  if (BOT_ACCOUNT_ID && !(await dbUpdate('bot_accounts', BOT_ACCOUNT_ID, { status: 'needs_login' }))) {
+    await dbUpdate('bot_accounts', BOT_ACCOUNT_ID, { status: 'error' })
+  }
+  process.exit(EXIT_NEEDS_LOGIN)
+}
+
 async function recoverRuntimeAfterBrowserDeath() {
   console.log('   ♻️ Browser/page was closed. Rebuilding session...')
   await createFreshRuntime()
@@ -556,9 +684,7 @@ async function recoverRuntimeAfterBrowserDeath() {
   await page.bringToFront()
   await interruptibleSleep(2000)
 
-  if (page.url().includes('login')) {
-    throw new Error('Session is no longer logged in')
-  }
+  if (await isLoggedOut(page)) throw new Error('LOGGED_OUT')
 
   console.log('   ✅ Browser session rebuilt')
   return page
@@ -633,6 +759,7 @@ async function main() {
     campaignCfg = { ...campaignCfg, ...campaignRow }
   }
 
+  BOT_NAME = cfg.name || BOT_NAME
   let runtime = computeEffectiveRuntime(cfg, campaignCfg)
 
   if (!runtime.hasValidWindow) {
@@ -678,13 +805,7 @@ async function main() {
   await page.bringToFront()
   await interruptibleSleep(3000)
 
-  if (page.url().includes('login')) {
-    console.error('❌ Not logged in — use "Login to Facebook" in the dashboard.')
-    await safeCleanupRuntime()
-    cleanPhotoCache()
-    if (BOT_ACCOUNT_ID) await dbUpdate('bot_accounts', BOT_ACCOUNT_ID, { status: 'error' })
-    process.exit(1)
-  }
+  if (await isLoggedOut(page)) await stopForLogin()
   console.log('✅ Logged in\n')
 
   let todayCount = 0
@@ -771,6 +892,13 @@ async function main() {
         break
       }
 
+      if (await allPendingBlockedForMe()) {
+        console.log(`\n⏸️  The ${counts.pending} post(s) left are in groups this account can't post in yet`)
+        console.log('   (join requested, membership questions, or pending-post limit) — ending this campaign run.')
+        console.log('   They stay in the queue for other bots, or for this bot once the group lets it post.')
+        break
+      }
+
       console.log('ℹ️ No due items right now — waiting')
       await interruptibleSleep(EMPTY_QUEUE_POLL_MS, 'next available post')
       continue
@@ -785,53 +913,37 @@ async function main() {
 
     page = await ensureLivePage()
 
-    const success = await postToGroup(page, item, uiProfile)
+    let result
+    let recovered = false
+    try {
+      result = await postToGroup(page, item, uiProfile)
 
-    if (success === 'REBUILD_AND_RETRY') {
-      browserDeathCount++
+      if (result === 'REBUILD_AND_RETRY') {
+        browserDeathCount++
 
-      if (browserDeathCount >= 3) {
-        console.log('   ❌ Browser session lost repeatedly. Bot stopped for safety.')
-        await markItem(item.id, 'failed', 'Browser session lost repeatedly')
-        if (BOT_ACCOUNT_ID) await dbUpdate('bot_accounts', BOT_ACCOUNT_ID, { status: 'error' })
-        break
-      }
-
-      try {
-        page = await recoverRuntimeAfterBrowserDeath()
-        const retrySuccess = await postToGroup(page, item, uiProfile, true)
-
-        if (isPostSuccess(retrySuccess)) {
-          browserDeathCount = 0
-          await markItem(item.id, 'posted', retrySuccess.note || null, retrySuccess.postUrl)
-          todayCount++
-          sessionCount++
-
-          if (BOT_ACCOUNT_ID) {
-            const botRow = await dbGet('bot_accounts', BOT_ACCOUNT_ID)
-            await dbUpdate('bot_accounts', BOT_ACCOUNT_ID, {
-              posts_today: todayCount,
-              total_posts: (botRow?.total_posts || 0) + 1,
-              last_active: new Date().toISOString(),
-              posts_today_date: now.toISOString().split('T')[0],
-            })
-          }
-
-          console.log(`   ✅ Posted after recovery! (${todayCount}/${runtime.effectiveMaxPostsPerDay} today)`)
-        } else {
-          const reason = _postError
-            ? `After browser recovery: ${_postError}`
-            : 'Could not complete post after browser recovery'
-          await markItem(item.id, 'failed', reason)
-          console.log(`   ❌ Failed after recovery — moving to next`)
+        if (browserDeathCount >= 3) {
+          console.log('   ❌ Browser session lost repeatedly. Bot stopped for safety.')
+          await markItem(item.id, 'failed', 'Browser session lost repeatedly')
+          if (BOT_ACCOUNT_ID) await dbUpdate('bot_accounts', BOT_ACCOUNT_ID, { status: 'error' })
+          break
         }
-      } catch (e) {
-        await markItem(item.id, 'failed', `Browser recovery failed: ${e.message}`)
-        console.log(`   ❌ Browser recovery failed: ${e.message}`)
+
+        recovered = true
+        page = await recoverRuntimeAfterBrowserDeath()
+        result = await postToGroup(page, item, uiProfile, true)
+        if (result === 'REBUILD_AND_RETRY') result = false
       }
-    } else if (isPostSuccess(success)) {
+    } catch (e) {
+      if (e.message === 'LOGGED_OUT') await stopForLogin(item.id)
+      if (e.message === 'BOT_STOPPED' || !recovered) throw e
+      console.log(`   ❌ Browser recovery failed: ${e.message}`)
+      _postError = `Browser recovery failed: ${e.message}`
+      result = false
+    }
+
+    if (isPostSuccess(result)) {
       browserDeathCount = 0
-      await markItem(item.id, 'posted', success.note || null, success.postUrl)
+      await markItem(item.id, 'posted', result.note || null, result.postUrl)
       todayCount++
       sessionCount++
 
@@ -845,9 +957,23 @@ async function main() {
         })
       }
 
-      console.log(`   ✅ Posted! (${todayCount}/${runtime.effectiveMaxPostsPerDay} today)`)
+      console.log(`   ✅ Posted${recovered ? ' after recovery' : ''}! (${todayCount}/${runtime.effectiveMaxPostsPerDay} today)`)
+    } else if (result?.requeue || result?.skipped) {
+      // Nothing was posted — no full post delay, just a short human-like pause
+      if (result.requeue) {
+        await requeueItem(item.id, result.note)
+        console.log(`   ↩️ ${result.note} — post returned to the queue`)
+      } else {
+        await markItem(item.id, 'skipped', result.note)
+        console.log(`   ⏭️ ${result.note} — post skipped`)
+      }
+      if (STOP_REQUESTED) throw new Error('BOT_STOPPED')
+      await interruptibleSleep(randomBetween(60000, 120000), 'next group')
+      continue
     } else {
-      const reason = _postError || 'Bot could not complete post'
+      const reason = recovered
+        ? `After browser recovery: ${_postError || 'could not complete post'}`
+        : _postError || 'Bot could not complete post'
       await markItem(item.id, 'failed', reason)
       console.log(`   ❌ Failed — ${reason}`)
     }
@@ -916,11 +1042,13 @@ async function postToGroup(page, item, uiProfile, isRetry = false) {
 
     if (STOP_REQUESTED) throw new Error('BOT_STOPPED')
 
+    if (await isLoggedOut(page)) throw new Error('LOGGED_OUT')
+
     console.log('   🖊️ Opening composer...')
     if (!(await openComposer(page, uiProfile))) {
-      await page.screenshot({ path: join(__dir, `debug_composer_${Date.now()}.png`) })
-      logPostError('Composer did not open', propLabel)
-      return false
+      // Work out why: not a member, join pending, pending-post limit, sell-form only…
+      const blocked = await handleNoComposer(page, item, uiProfile)
+      if (blocked !== null) return blocked
     }
 
     await interruptibleSleep(randomBetween(1500, 2500))
@@ -973,6 +1101,7 @@ async function postToGroup(page, item, uiProfile, isRetry = false) {
       return false
     }
     console.log('   ✅ Facebook accepted the post')
+    await setGroupAccess(item.groups?.id, 'member')
 
     // Everything below is best-effort: the post is already submitted
     let postUrl = null
@@ -1002,7 +1131,7 @@ async function postToGroup(page, item, uiProfile, isRetry = false) {
       if (err.message === 'BOT_STOPPED') STOP_REQUESTED = true
       return { ok: true, postUrl: null, note: `Post was submitted but not confirmed (${firstLine}) — check the group` }
     }
-    if (err.message === 'BOT_STOPPED') throw err
+    if (err.message === 'BOT_STOPPED' || err.message === 'LOGGED_OUT') throw err
     if (isClosedTargetError(err)) {
       console.log(`   ⚠️ Browser closed mid-post [${propLabel}]: ${firstLine}`)
       _postError = `Browser closed: ${firstLine}`
@@ -1054,7 +1183,7 @@ async function openComposer(page, uiProfile) {
   try {
     const el = page
       .locator('div[role="button"]')
-      .filter({ hasText: /write something|what.s on your mind/i })
+      .filter({ hasText: /write something|what.s on your mind|start (a )?discussion/i })
       .first()
     if (await el.isVisible({ timeout: 3000 })) {
       await el.click()
@@ -1063,6 +1192,213 @@ async function openComposer(page, uiProfile) {
   } catch {}
 
   return false
+}
+
+// ── Why the composer didn't open ──────────────────────────
+// Reads the group page: Join / Cancel request buttons, "Sell Something" form,
+// Discussion tab, and the "at the limit for pending content" notice.
+async function readGroupState(page) {
+  try {
+    return await page.evaluate(() => {
+      const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase().replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '')
+      const items = [...document.querySelectorAll('[role="button"], button, [role="tab"], a')]
+        .filter(el => el.getClientRects().length > 0)
+        .map(el => ({ el, t: norm(el.textContent), l: norm(el.getAttribute('aria-label')) }))
+      const has = (...names) => items.some(x => names.includes(x.t) || names.includes(x.l))
+      const isTab = x => x.el.getAttribute('role') === 'tab' || x.el.tagName === 'A'
+      const discussion = items.find(x => isTab(x) && (x.t === 'discussion' || x.t === 'discussions'))
+      const body = norm(document.body?.innerText).replace(/[‘’]/g, "'")
+      return {
+        loggedOut: !!document.querySelector('input[name="pass"]') || has('use another profile'),
+        joinButton: has('join group'),
+        requested: has('cancel request', 'requested'),
+        sellButton: has('sell something'),
+        discussionTab: !!discussion,
+        discussionSelected: !!discussion && discussion.el.getAttribute('aria-selected') === 'true',
+        // Tabs that don't fit are hidden under "More" — Discussion could be in there
+        moreTabs: items.some(x => x.t === 'more' && (x.el.getAttribute('role') === 'tab' || x.el.getAttribute('aria-haspopup'))),
+        pendingLimit: body.includes('at the limit for pending content'),
+      }
+    })
+  } catch {
+    return {}
+  }
+}
+
+async function clickDiscussionTab(page) {
+  try {
+    return await page.evaluate(() => {
+      const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase().replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '')
+      for (const el of document.querySelectorAll('[role="tab"], a')) {
+        if (el.getClientRects().length && ['discussion', 'discussions'].includes(norm(el.textContent))) {
+          el.click()
+          return true
+        }
+      }
+      return false
+    })
+  } catch {
+    return false
+  }
+}
+
+// Returns null when the composer is open after all, otherwise the post's outcome:
+// { requeue, note } — another bot (or this one, later) can post it
+// { skipped, note } — the group was turned off
+// false             — unknown problem (_postError set, screenshot saved)
+async function handleNoComposer(page, item, uiProfile) {
+  const groupId = item.groups?.id
+  let state = await readGroupState(page)
+
+  if (state.loggedOut) throw new Error('LOGGED_OUT')
+  if (state.pendingLimit) return await pendingLimitReached(groupId)
+
+  if (state.joinButton && !(state.sellButton && !state.discussionTab)) return await joinGroup(page, item)
+
+  if (state.requested) {
+    await setGroupAccess(groupId, 'join_pending', { retryMs: 6 * HOUR_MS, note: 'Join request waiting for admin approval' })
+    return { requeue: true, note: `Waiting: ${BOT_NAME}'s join request is pending admin approval` }
+  }
+
+  if (state.discussionTab && !state.discussionSelected) {
+    console.log('   💬 No composer here — trying the Discussion tab')
+    if (await clickDiscussionTab(page)) {
+      await interruptibleSleep(randomBetween(3000, 5000))
+      if (await openComposer(page, uiProfile)) return null
+      state = await readGroupState(page)
+      if (state.pendingLimit) return await pendingLimitReached(groupId)
+    }
+  }
+
+  // Only a "Sell Something" form and no Discussion tab → turn the group off.
+  // Strict: re-check after a reload, and never when tabs are hidden under "More".
+  if (state.sellButton && !state.discussionTab && !state.moreTabs) {
+    console.log('   🔎 Only a "Sell Something" form — re-checking before turning the group off')
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 })
+    await interruptibleSleep(randomBetween(4000, 6000))
+    const again = await readGroupState(page)
+    if (again.sellButton && !again.discussionTab && !again.moreTabs && !(await openComposer(page, uiProfile))) {
+      const note = 'Group turned off: only allows Sell forms (no Discussion tab)'
+      await disableGroup(groupId, 'sale_form_only', note)
+      console.log(`   🚫 "${item.groups?.name}" only allows Sell forms — group turned off`)
+      return { skipped: true, note }
+    }
+    if (again.discussionTab || again.moreTabs) console.log('   ℹ️ Re-check found more tabs — group left on')
+  }
+
+  await page.screenshot({ path: join(__dir, `debug_composer_${Date.now()}.png`) }).catch(() => {})
+  logPostError('Composer did not open', item.groups?.name || '')
+  return false
+}
+
+async function pendingLimitReached(groupId) {
+  await setGroupAccess(groupId, 'pending_limit', {
+    retryMs: 24 * HOUR_MS,
+    note: "At Facebook's limit for posts awaiting admin approval",
+  })
+  return { requeue: true, note: `Waiting: ${BOT_NAME} has too many posts awaiting admin approval in this group` }
+}
+
+// Membership-question / group-rules dialog shown after clicking "Join group"
+async function readJoinDialog(page) {
+  try {
+    return await page.evaluate(() => {
+      const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase().replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '')
+      for (const d of document.querySelectorAll('[role="dialog"]')) {
+        if (!d.getClientRects().length) continue
+        const text = norm(d.innerText)
+        if (!/question|rules|submit|join/.test(text)) continue // e.g. a Messenger chat box
+        const inputs = d.querySelectorAll(
+          'textarea, input[type="text"], input:not([type]), input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"], [contenteditable="true"]'
+        ).length
+        const agree = [...d.querySelectorAll('[role="button"], button')].some(b => ['i agree', 'agree'].includes(norm(b.textContent)))
+        return { open: true, hasQuestions: inputs > 0 || /membership questions|answer questions/.test(text), agree }
+      }
+      return { open: false }
+    })
+  } catch {
+    return { open: false }
+  }
+}
+
+async function clickInDialog(page, names) {
+  try {
+    return await page.evaluate((names) => {
+      const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase().replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '')
+      for (const b of document.querySelectorAll('[role="dialog"] [role="button"], [role="dialog"] button')) {
+        if (b.getClientRects().length && (names.includes(norm(b.textContent)) || names.includes(norm(b.getAttribute('aria-label'))))) {
+          b.click()
+          return true
+        }
+      }
+      return false
+    }, names)
+  } catch {
+    return false
+  }
+}
+
+async function joinGroup(page, item) {
+  const groupId = item.groups?.id
+
+  if ((await joinsToday()) >= MAX_JOINS_PER_DAY) {
+    await setGroupAccess(groupId, 'not_member', {
+      retryMs: msUntilTomorrow(),
+      note: `Daily join limit (${MAX_JOINS_PER_DAY}) reached — will join tomorrow`,
+    })
+    return { requeue: true, note: `Waiting: ${BOT_NAME} isn't in this group (daily join limit reached, joins tomorrow)` }
+  }
+
+  console.log('   🙋 Not a member — clicking "Join group"')
+  const clicked = await page.evaluate(() => {
+    const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase().replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '')
+    for (const b of document.querySelectorAll('[role="button"], button')) {
+      if (b.getClientRects().length && (norm(b.textContent) === 'join group' || norm(b.getAttribute('aria-label')) === 'join group')) {
+        b.click()
+        return true
+      }
+    }
+    return false
+  }).catch(() => false)
+
+  if (!clicked) {
+    await setGroupAccess(groupId, 'needs_manual_join', { retryMs: 24 * HOUR_MS, note: 'Could not click "Join group"' })
+    return { requeue: true, note: `Waiting: ${BOT_NAME} isn't in this group — join it manually` }
+  }
+
+  // Counts toward the daily join cap even if the outcome is unclear
+  await setGroupAccess(groupId, 'not_member', { joined: true, note: 'Clicked "Join group"' })
+  await interruptibleSleep(randomBetween(3000, 5000))
+
+  const dialog = await readJoinDialog(page)
+  if (dialog.open && dialog.hasQuestions) {
+    // Never invent answers — close it and leave the group for a person to join
+    console.log('   📝 Group asks membership questions — leaving them for a person')
+    if (!(await clickInDialog(page, ['close']))) await page.keyboard.press('Escape').catch(() => {})
+    await interruptibleSleep(2000)
+  } else if (dialog.open && dialog.agree) {
+    console.log('   📜 Agreeing to group rules')
+    await clickInDialog(page, ['i agree', 'agree'])
+    await interruptibleSleep(randomBetween(2000, 3000))
+  }
+
+  const after = await readGroupState(page)
+  if (after.requested) {
+    await setGroupAccess(groupId, 'join_pending', { retryMs: 6 * HOUR_MS, note: 'Join request waiting for admin approval' })
+    console.log('   ⏳ Join requested — waiting for admin approval')
+    return { requeue: true, note: `Waiting: ${BOT_NAME} asked to join this group (admin approval pending)` }
+  }
+  if (!after.joinButton && !dialog.hasQuestions) {
+    await setGroupAccess(groupId, 'member', { note: 'Joined by bot' })
+    console.log('   ✅ Joined the group — the post will be retried shortly')
+    return { requeue: true, note: `Waiting: ${BOT_NAME} just joined this group — posting shortly` }
+  }
+
+  const note = dialog.hasQuestions
+    ? 'Group asks membership questions — join it manually from this account'
+    : 'Join did not go through — join it manually from this account'
+  await setGroupAccess(groupId, 'needs_manual_join', { retryMs: 24 * HOUR_MS, note })
+  return { requeue: true, note: `Waiting: ${BOT_NAME} — ${note}` }
 }
 
 async function attachMedia(page, localPaths, uiProfile) {

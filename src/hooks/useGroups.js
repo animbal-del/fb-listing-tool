@@ -9,6 +9,7 @@ export function normalizeGroupUrl(url = '') {
 
 export function useGroups() {
   const [groups,  setGroups]  = useState([])
+  const [access,  setAccess]  = useState([]) // bot_group_access rows + bot_name
   const [loading, setLoading] = useState(true)
   const [error,   setError]   = useState(null)
 
@@ -27,6 +28,14 @@ export function useGroups() {
       } else {
         setGroups(data ?? [])
       }
+
+      // Which bot account is in which group — written by the bot; optional
+      const [accessRes, botsRes] = await Promise.all([
+        supabase.from('bot_group_access').select('bot_account_id, group_id, status, note, retry_after, updated_at'),
+        supabase.from('bot_accounts').select('id, name'),
+      ])
+      const botNames = new Map((botsRes.data || []).map(b => [b.id, b.name]))
+      setAccess((accessRes.data || []).map(a => ({ ...a, bot_name: botNames.get(a.bot_account_id) || 'Bot' })))
     } catch (e) {
       console.error('useGroups unexpected error:', e)
       setError(e.message)
@@ -60,7 +69,11 @@ export function useGroups() {
     setGroups(prev => prev.filter(g => g.id !== id))
   }
 
-  const toggleActive = async (id, current) => update(id, { active: !current })
+  // Turning a group back on clears the reason the bot turned it off
+  const toggleActive = async (id, current) => {
+    const turnedOffByBot = !current && groups.find(g => g.id === id)?.disabled_reason
+    return update(id, turnedOffByBot ? { active: true, disabled_reason: null, disabled_at: null } : { active: !current })
+  }
 
   // Insert new groups; groups whose Facebook URL already exists get their
   // member count / locality updated instead of being duplicated.
@@ -90,5 +103,5 @@ export function useGroups() {
     return { added: toInsert.length, updated: toUpdate.length, unchanged: rows.length - toInsert.length - toUpdate.length }
   }
 
-  return { groups, loading, error, refetch: fetch, create, update, remove, toggleActive, bulkImport }
+  return { groups, access, loading, error, refetch: fetch, create, update, remove, toggleActive, bulkImport }
 }

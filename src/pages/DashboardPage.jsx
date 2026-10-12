@@ -363,7 +363,10 @@ function PostActivityLog({ items, messageTitle }) {
                   </td>
                   <td className="px-4 py-2.5 text-ink-600 max-w-[140px]">
                     {item.error_log ? (
-                      <span className="text-flame-500 text-xs truncate block" title={item.error_log}>
+                      <span
+                        className={`text-xs truncate block ${item.status === 'failed' ? 'text-flame-500' : 'text-ink-400'}`}
+                        title={item.error_log}
+                      >
                         {item.error_log.slice(0, 40)}
                       </span>
                     ) : item.post_url ? (
@@ -1076,6 +1079,7 @@ const BOT_STATUS = {
   logging_in: { label: 'Logging in', dot: 'bg-yellow-400 animate-pulse', badge: 'bg-yellow-500/15 text-yellow-300' },
   paused: { label: 'Paused', dot: 'bg-yellow-400', badge: 'bg-yellow-500/15 text-yellow-400' },
   error: { label: 'Error', dot: 'bg-flame-400', badge: 'bg-flame-500/15 text-flame-400' },
+  needs_login: { label: 'Login needed', dot: 'bg-flame-400', badge: 'bg-flame-500/15 text-flame-400' },
 }
 
 function BotCard({ bot, campaigns, serverOnline, onEdit, onDelete, onRefresh }) {
@@ -1150,7 +1154,11 @@ function BotCard({ bot, campaigns, serverOnline, onEdit, onDelete, onRefresh }) 
         </div>
 
         <div className="px-4 pb-3">
-          {bot.hasSession ? (
+          {bot.status === 'needs_login' ? (
+            <p className="text-xs text-flame-400 flex items-center gap-1.5">
+              <AlertTriangle size={10} /> Facebook logged this account out — re-login needed
+            </p>
+          ) : bot.hasSession ? (
             <p className="text-xs text-jade-500 flex items-center gap-1.5">
               <CheckCircle size={10} /> Session saved
             </p>
