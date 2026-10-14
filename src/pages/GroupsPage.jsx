@@ -62,7 +62,7 @@ function parseGroupsCsv(text) {
 const ACCESS_LABEL = {
   not_member:        { label: 'Not joined',    cls: 'bg-ink-700 text-ink-300 border-ink-600' },
   join_pending:      { label: 'Join requested', cls: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/25' },
-  needs_manual_join: { label: 'Join manually', cls: 'bg-flame-500/15 text-flame-400 border-flame-500/25' },
+  needs_manual_join: { label: 'Check manually', cls: 'bg-flame-500/15 text-flame-400 border-flame-500/25' },
   pending_limit:     { label: 'Pending limit', cls: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/25' },
 }
 

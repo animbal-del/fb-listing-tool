@@ -9,6 +9,8 @@
 import { chromium } from 'playwright'
 import { createClient } from '@supabase/supabase-js'
 import { existsSync, writeFileSync, mkdirSync, rmSync } from 'fs'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import 'dotenv/config'
@@ -277,8 +279,15 @@ async function warmPhotoCache(campaignId) {
         try {
           const res = await fetch(url)
           if (!res.ok) throw new Error(`HTTP ${res.status}`)
-          writeFileSync(localPath, Buffer.from(await res.arrayBuffer()))
-          console.log(`   ✅ Cached: ${localPath.split('/').pop()} (${mediaList[i].type})`)
+          const buf = Buffer.from(await res.arrayBuffer())
+          if (isWebp(buf)) {
+            // Facebook rejects WebP on some accounts ("format we don't support") — upload a JPG instead
+            await webpToJpg(buf, localPath)
+            console.log(`   ✅ Cached: ${localPath.split('/').pop()} (converted from WebP)`)
+          } else {
+            writeFileSync(localPath, buf)
+            console.log(`   ✅ Cached: ${localPath.split('/').pop()} (${mediaList[i].type})`)
+          }
         } catch (e) {
           console.log(`   ⚠️ Could not cache media ${i + 1} for ${prop.id}: ${e.message}`)
         }
@@ -295,9 +304,27 @@ async function warmPhotoCache(campaignId) {
 function getMediaPath(propId, index, url) {
   const urlPath = (url || '').split('?')[0]
   const ext = (urlPath.split('.').pop() || '').toLowerCase()
-  const allowed = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'mp4', 'mov', 'webm', 'm4v']
-  const safeExt = allowed.includes(ext) ? ext : 'bin'
+  const allowed = ['jpg', 'jpeg', 'png', 'gif', 'mp4', 'mov', 'webm', 'm4v']
+  // WebP photos are converted to JPG when cached
+  const safeExt = ext === 'webp' ? 'jpg' : allowed.includes(ext) ? ext : 'bin'
   return join(PHOTO_DIR, `${propId}_${index}.${safeExt}`)
+}
+
+const execFileAsync = promisify(execFile)
+
+function isWebp(buf) {
+  return buf.length > 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP'
+}
+
+// Convert with ImageMagick; [0] keeps only the first frame of an animated WebP
+async function webpToJpg(buf, outPath) {
+  const tmp = `${outPath}.src.webp`
+  writeFileSync(tmp, buf)
+  try {
+    await execFileAsync('convert', [`${tmp}[0]`, '-auto-orient', '-background', 'white', '-flatten', '-quality', '90', `jpg:${outPath}`])
+  } finally {
+    rmSync(tmp, { force: true })
+  }
 }
 
 function getCachedMedia(propId, prop) {
@@ -474,21 +501,14 @@ async function allPendingBlockedForMe() {
   }
 }
 
-async function markItem(id, status, errorLog = null, postUrl = null) {
-  const payload = {
+async function markItem(id, status, errorLog = null) {
+  await dbUpdate('post_queue', id, {
     status,
     error_log: errorLog,
     posted_at: status === 'posted' ? new Date().toISOString() : null,
-    post_url: status === 'posted' ? postUrl : null,
     claimed_at: null,
     ...(BOT_ACCOUNT_ID ? { assigned_bot_id: BOT_ACCOUNT_ID } : {}),
-  }
-
-  const ok = await dbUpdate('post_queue', id, payload)
-  if (!ok) {
-    const { post_url, ...withoutPostUrl } = payload
-    await dbUpdate('post_queue', id, withoutPostUrl)
-  }
+  })
 }
 
 // ── Selector helpers ──────────────────────────────────────
@@ -943,7 +963,7 @@ async function main() {
 
     if (isPostSuccess(result)) {
       browserDeathCount = 0
-      await markItem(item.id, 'posted', result.note || null, result.postUrl)
+      await markItem(item.id, 'posted', result.note || null)
       todayCount++
       sessionCount++
 
@@ -1084,8 +1104,6 @@ async function postToGroup(page, item, uiProfile, isRetry = false) {
       return false
     }
 
-    const beforePostUrls = await collectPostUrls(page)
-
     console.log('   🖱️ Clicking Post...')
     if (!(await clickPost(page, uiProfile))) {
       await page.screenshot({ path: join(__dir, `debug_post_${Date.now()}.png`) })
@@ -1094,42 +1112,38 @@ async function postToGroup(page, item, uiProfile, isRetry = false) {
     }
     postClicked = true
 
-    // Facebook closes the composer once it has accepted the post
-    if (!(await waitForComposerClosed(45000))) {
-      await page.screenshot({ path: join(__dir, `debug_post_${Date.now()}.png`) }).catch(() => {})
-      logPostError("Facebook didn't confirm the post (composer stayed open) — check the group before retrying", propLabel)
-      return false
+    // Facebook can't confirm a post right away (admin approval etc.), so once Post
+    // is clicked it counts as posted. Only note when the composer didn't close.
+    let note = null
+    if (!(await waitForComposerClosed(30000))) {
+      if (await closeParticipationReview(page)) {
+        note = 'Posted — group asked membership questions afterwards (answer them on Facebook)'
+        await setGroupAccess(item.groups?.id, 'needs_manual_join', { note: 'Answer the group\'s participation questions' })
+      } else {
+        note = 'Post clicked but the composer stayed open — check the group'
+      }
+      console.log(`   ⚠️ ${note}`)
+    } else {
+      console.log('   ✅ Facebook accepted the post')
+      await setGroupAccess(item.groups?.id, 'member')
     }
-    console.log('   ✅ Facebook accepted the post')
-    await setGroupAccess(item.groups?.id, 'member')
-
-    // Everything below is best-effort: the post is already submitted
-    let postUrl = null
-    try {
-      await interruptibleSleep(randomBetween(3000, 5000))
-      postUrl = await findNewPostUrl(page, beforePostUrls, item.groups?.fb_url)
-    } catch (e) {
-      if (e.message === 'BOT_STOPPED') return { ok: true, postUrl: null }
-    }
-    console.log(postUrl
-      ? `   🔗 Post URL captured: ${postUrl}`
-      : '   ⚠️ Posted, but post URL could not be detected (normal for posts awaiting admin approval)')
 
     try {
       await page.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 30000 })
       await interruptibleSleep(1500)
     } catch (e) {
+      if (e.message === 'BOT_STOPPED') return { ok: true, note }
       console.log(`   ⚠️ Could not return to home page (${String(e.message).split('\n')[0]}) — continuing`)
     }
 
-    return { ok: true, postUrl }
+    return { ok: true, note }
   } catch (err) {
     const firstLine = String(err.message || err).split('\n')[0]
     if (postClicked) {
       // Never retry or fail a post that may already be live (would duplicate it)
       console.log(`   ⚠️ Error after clicking Post [${propLabel}]: ${firstLine} — marked posted, please check the group`)
       if (err.message === 'BOT_STOPPED') STOP_REQUESTED = true
-      return { ok: true, postUrl: null, note: `Post was submitted but not confirmed (${firstLine}) — check the group` }
+      return { ok: true, note: `Post was submitted but not confirmed (${firstLine}) — check the group` }
     }
     if (err.message === 'BOT_STOPPED' || err.message === 'LOGGED_OUT') throw err
     if (isClosedTargetError(err)) {
@@ -1218,6 +1232,10 @@ async function readGroupState(page) {
         // Tabs that don't fit are hidden under "More" — Discussion could be in there
         moreTabs: items.some(x => x.t === 'more' && (x.el.getAttribute('role') === 'tab' || x.el.getAttribute('aria-haspopup'))),
         pendingLimit: body.includes('at the limit for pending content'),
+        // Private, deleted, or this account was blocked/removed
+        unavailable: body.includes("content isn't available"),
+        // Still on the Facebook logo splash — nothing clickable yet
+        loading: items.length < 5,
       }
     })
   } catch {
@@ -1249,8 +1267,25 @@ async function clickDiscussionTab(page) {
 async function handleNoComposer(page, item, uiProfile) {
   const groupId = item.groups?.id
   let state = await readGroupState(page)
+  let reloaded = false
+
+  if (state.loading) {
+    console.log('   ⏳ Group page still loading — reloading once')
+    if (await reloadAndOpenComposer(page, uiProfile)) return null
+    reloaded = true
+    state = await readGroupState(page)
+  }
 
   if (state.loggedOut) throw new Error('LOGGED_OUT')
+
+  if (state.unavailable) {
+    await setGroupAccess(groupId, 'needs_manual_join', {
+      retryMs: 7 * 24 * HOUR_MS,
+      note: "Group isn't available to this account (private, deleted, or blocked)",
+    })
+    return { requeue: true, note: `Waiting: group isn't available to ${BOT_NAME} — another bot will post it` }
+  }
+
   if (state.pendingLimit) return await pendingLimitReached(groupId)
 
   if (state.joinButton && !(state.sellButton && !state.discussionTab)) return await joinGroup(page, item)
@@ -1286,9 +1321,44 @@ async function handleNoComposer(page, item, uiProfile) {
     if (again.discussionTab || again.moreTabs) console.log('   ℹ️ Re-check found more tabs — group left on')
   }
 
+  if (!reloaded) {
+    console.log('   🔄 Composer still not found — reloading once')
+    if (await reloadAndOpenComposer(page, uiProfile)) return null
+  }
+
+  // Unknown reason: skip this group for this bot for a day and let another bot try
   await page.screenshot({ path: join(__dir, `debug_composer_${Date.now()}.png`) }).catch(() => {})
-  logPostError('Composer did not open', item.groups?.name || '')
-  return false
+  await setGroupAccess(groupId, 'needs_manual_join', {
+    retryMs: 24 * HOUR_MS,
+    note: 'Composer did not open (unknown reason) — open the group with this account to check',
+  })
+  return { requeue: true, note: `Waiting: composer did not open for ${BOT_NAME} — another bot will post it` }
+}
+
+async function reloadAndOpenComposer(page, uiProfile) {
+  try {
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 })
+  } catch (e) {
+    if (isClosedTargetError(e)) throw e
+  }
+  await interruptibleSleep(randomBetween(5000, 7000))
+  try { await page.keyboard.press('Escape') } catch {}
+  return await openComposer(page, uiProfile)
+}
+
+// Some groups show "Participation review" questions right after a post is submitted
+async function closeParticipationReview(page) {
+  try {
+    return await page.evaluate(() => {
+      const dialog = [...document.querySelectorAll('[role="dialog"]')]
+        .find(d => /participation review|answering these questions/i.test(d.textContent || ''))
+      if (!dialog) return false
+      dialog.querySelector('[aria-label="Close"]')?.click()
+      return true
+    })
+  } catch {
+    return false
+  }
 }
 
 async function pendingLimitReached(groupId) {
@@ -1573,105 +1643,6 @@ async function clickPost(page, uiProfile) {
     }
     return false
   })
-}
-
-async function collectPostUrls(page) {
-  try {
-    const urls = await page.evaluate(() => {
-      const values = []
-
-      for (const a of document.querySelectorAll('a[href]')) {
-        const href = a.href || ''
-        if (!href) continue
-
-        const clean = href.split('?')[0]
-        const looksLikePost =
-          /\/groups\/[^/]+\/posts\/\d+/i.test(clean) ||
-          /\/groups\/permalink\/\d+/i.test(clean) ||
-          /\/permalink\.php/i.test(clean) ||
-          /\/posts\/\d+/i.test(clean) ||
-          /story_fbid=\d+/i.test(href)
-
-        if (looksLikePost) values.push(href)
-      }
-
-      return values
-    })
-
-    return [...new Set((urls || []).map(normalizeFacebookPostUrl).filter(Boolean))]
-  } catch {
-    return []
-  }
-}
-
-async function findNewPostUrl(page, beforeUrls = [], groupUrl = '') {
-  const before = new Set((beforeUrls || []).map(normalizeFacebookPostUrl).filter(Boolean))
-
-  for (let i = 0; i < 8; i++) {
-    const currentUrls = await collectPostUrls(page)
-    const added = currentUrls.find(url => !before.has(url))
-    if (added) return added
-    await interruptibleSleep(1000)
-  }
-
-  const fallback = await findLatestVisiblePostUrl(page)
-  if (fallback && !before.has(fallback)) return fallback
-
-  const groupId = extractFacebookGroupId(groupUrl)
-  if (!groupId) return null
-
-  const anyGroupPost = (await collectPostUrls(page)).find(url => url.includes(`/groups/${groupId}/posts/`))
-  return anyGroupPost || null
-}
-
-async function findLatestVisiblePostUrl(page) {
-  try {
-    const href = await page.evaluate(() => {
-      const anchors = [...document.querySelectorAll('a[href]')]
-      const timestampAnchors = anchors.filter((a) => {
-        const aria = (a.getAttribute('aria-label') || '').toLowerCase()
-        const text = (a.textContent || '').trim().toLowerCase()
-        const href = a.href || ''
-        const hasTimeText = /\b(now|just now|m|h|min|hr|yesterday)\b/.test(text)
-        const hasTimeAria = /\b(now|just now|minute|hour|yesterday)\b/.test(aria)
-        const looksLikePost = /\/groups\/[^/]+\/posts\/\d+|\/posts\/\d+|story_fbid=\d+|permalink/i.test(href)
-        return looksLikePost && (hasTimeText || hasTimeAria)
-      })
-
-      return timestampAnchors[0]?.href || null
-    })
-
-    return normalizeFacebookPostUrl(href)
-  } catch {
-    return null
-  }
-}
-
-function normalizeFacebookPostUrl(value) {
-  if (!value) return null
-
-  try {
-    const url = new URL(value, 'https://www.facebook.com')
-    url.hash = ''
-
-    const storyId = url.searchParams.get('story_fbid')
-    const groupId = url.searchParams.get('group_id') || extractFacebookGroupId(url.pathname)
-    if (storyId && groupId) return `https://www.facebook.com/groups/${groupId}/posts/${storyId}/`
-
-    for (const key of [...url.searchParams.keys()]) url.searchParams.delete(key)
-
-    if (url.hostname.endsWith('facebook.com')) {
-      url.hostname = 'www.facebook.com'
-      return url.toString()
-    }
-  } catch {}
-
-  return null
-}
-
-function extractFacebookGroupId(value = '') {
-  const match = String(value).match(/\/groups\/([^/?#]+)/i)
-  return match?.[1] || null
 }
 
 function buildText(item) {

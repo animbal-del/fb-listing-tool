@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y \
     procps \
     net-tools \
     iproute2 \
+    imagemagick \
  && rm -rf /var/lib/apt/lists/*
 
 RUN npx playwright install --with-deps chromium

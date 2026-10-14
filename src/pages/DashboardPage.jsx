@@ -343,7 +343,15 @@ function PostActivityLog({ items, messageTitle }) {
                     </div>
                   </td>
                   <td className="px-4 py-2.5 text-ink-400 max-w-[180px]">
-                    <p className="truncate">{item.groups?.name || '—'}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="truncate">{item.groups?.name || '—'}</p>
+                      {item.groups?.fb_url && (
+                        <a href={item.groups.fb_url} target="_blank" rel="noreferrer" title="Open group on Facebook"
+                          className="shrink-0 text-ink-500 hover:text-ink-200 transition-colors">
+                          <ExternalLink size={12}/>
+                        </a>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-2.5 text-ink-400 max-w-[150px]">
                     <p className="truncate">
