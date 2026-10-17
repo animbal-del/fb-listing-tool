@@ -99,8 +99,8 @@ function normalizeImportedProperty(row) {
 function downloadSampleCsv() {
   const csv = [
     'title,description,bhk,city,society_name,rent,deposit,locality,phone,whatsapp_link,status',
-    '"1BHK Flat in Kharadi","Fully furnished near EON IT Park","1BHK","Pune","EON Residency",25000,50000,"Kharadi","9156005618","9156005618","available"',
-    '"2BHK Flat in Wakad","Semi-furnished family flat","2BHK","Pune","Wakad Heights",32000,70000,"Wakad","9156005618","9156005618","available"',
+    '"1BHK Flat in Kharadi","Fully furnished near EON IT Park","1BHK","Pune","EON Residency",25000,50000,"Kharadi","9518974818","9518974818","available"',
+    '"2BHK Flat in Wakad","Semi-furnished family flat","2BHK","Pune","Wakad Heights",32000,70000,"Wakad","9518974818","9518974818","available"',
   ].join('\n')
 
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })

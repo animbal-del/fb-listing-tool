@@ -8,7 +8,7 @@
 // The "Highlights" / "Location Highlights" sections are dropped and blank lines separate the sections.
 // Pure text transform — the stored descriptions in Denner's DB are never modified.
 
-const DEFAULT_CONTACT = process.env.POST_CONTACT_NUMBERS || '9156005618 / 7020738841'
+const DEFAULT_CONTACT = process.env.POST_CONTACT_NUMBERS || '9518974818 / 7020738841'
 
 const TLDS = 'com|in|net|org|co|ly|me|io|app|link|gl|info|biz|site|xyz|page|to|us|ai|gle'
 const LINK_RE = new RegExp(
