@@ -8,7 +8,7 @@
 
 import { chromium } from 'playwright'
 import { createClient } from '@supabase/supabase-js'
-import { existsSync, writeFileSync, mkdirSync, rmSync } from 'fs'
+import { existsSync, writeFileSync, mkdirSync, rmSync, readFileSync, statSync } from 'fs'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { fileURLToPath } from 'url'
@@ -40,6 +40,15 @@ let BOT_NAME = 'This bot'
 let _cdTimer = null
 
 const EMPTY_QUEUE_POLL_MS = 60 * 1000
+
+// Facebook page loads: slow server moments get a longer wait and one retry
+const PAGE_LOAD_TIMEOUT_MS = 60 * 1000
+
+// The VPS has 1 CPU — only this many bots load/post on Facebook at the same moment.
+// Other bots keep running and wait their turn (a post takes ~1–2 min, delays are 8–15 min).
+const MAX_ACTIVE_BOTS = Number(process.env.MAX_ACTIVE_BOTS || 2)
+const SLOT_DIR = '/tmp/fb_bot_slots'
+const SLOT_STALE_MS = 20 * 60 * 1000
 
 // Joining many groups quickly gets accounts checkpointed — cap joins per bot per day
 const MAX_JOINS_PER_DAY = Number(process.env.MAX_JOINS_PER_DAY || 6)
@@ -608,6 +617,70 @@ function isClosedTargetError(err) {
   )
 }
 
+// Open a Facebook URL; on a timeout wait a bit and try once more
+async function openPage(page, url, { retry = true } = {}) {
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PAGE_LOAD_TIMEOUT_MS })
+  } catch (e) {
+    if (!retry || e.name !== 'TimeoutError' || STOP_REQUESTED) throw e
+    console.log('   ⚠️ Facebook was slow to load — retrying once...')
+    await interruptibleSleep(5000)
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PAGE_LOAD_TIMEOUT_MS })
+  }
+}
+
+// ── Browser slots — shared across bot processes via lock dirs ─
+function slotIsStale(dir) {
+  try {
+    if (Date.now() - statSync(dir).mtimeMs > SLOT_STALE_MS) return true
+    const pid = Number(readFileSync(join(dir, 'pid'), 'utf8'))
+    if (!pid) return false
+    process.kill(pid, 0)
+    return false
+  } catch (e) {
+    return e.code === 'ESRCH'
+  }
+}
+
+function tryTakeSlot() {
+  mkdirSync(SLOT_DIR, { recursive: true })
+  for (let i = 0; i < MAX_ACTIVE_BOTS; i++) {
+    const dir = join(SLOT_DIR, `slot_${i}`)
+    try {
+      mkdirSync(dir)
+      writeFileSync(join(dir, 'pid'), String(process.pid))
+      return dir
+    } catch {
+      if (slotIsStale(dir)) {
+        try { rmSync(dir, { recursive: true, force: true }) } catch {}
+      }
+    }
+  }
+  return null
+}
+
+// onStopWhileWaiting runs if the bot is stopped before it got a turn
+async function withBrowserSlot(fn, onStopWhileWaiting = null) {
+  let dir = tryTakeSlot()
+  if (!dir) {
+    console.log(`   ⏸️ ${MAX_ACTIVE_BOTS} other bots are using Facebook right now — waiting for a free turn...`)
+    try {
+      while (!dir) {
+        await interruptibleSleep(5000)
+        dir = tryTakeSlot()
+      }
+    } catch (e) {
+      if (onStopWhileWaiting) await onStopWhileWaiting()
+      throw e
+    }
+  }
+  try {
+    return await fn()
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }) } catch {}
+  }
+}
+
 async function safeCleanupRuntime() {
   stopCountdown()
 
@@ -700,7 +773,7 @@ async function recoverRuntimeAfterBrowserDeath() {
   await createFreshRuntime()
 
   const page = CURRENT_PAGE
-  await page.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 30000 })
+  await openPage(page, 'https://www.facebook.com/')
   await page.bringToFront()
   await interruptibleSleep(2000)
 
@@ -816,16 +889,20 @@ async function main() {
   }
 
   await warmPhotoCache(CAMPAIGN_ID)
-  await createFreshRuntime()
 
-  let page = CURRENT_PAGE
+  let page
+  const loggedOut = await withBrowserSlot(async () => {
+    await createFreshRuntime()
+    page = CURRENT_PAGE
 
-  console.log('🔍 Verifying session...')
-  await page.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 30000 })
-  await page.bringToFront()
-  await interruptibleSleep(3000)
+    console.log('🔍 Verifying session...')
+    await openPage(page, 'https://www.facebook.com/')
+    await page.bringToFront()
+    await interruptibleSleep(3000)
+    return isLoggedOut(page)
+  })
 
-  if (await isLoggedOut(page)) await stopForLogin()
+  if (loggedOut) await stopForLogin()
   console.log('✅ Logged in\n')
 
   let todayCount = 0
@@ -931,35 +1008,39 @@ async function main() {
       console.log(`   Listing: ${item.properties?.title}${item.properties?.code ? ` (${item.properties.code})` : ''}`)
     }
 
-    page = await ensureLivePage()
-
     let result
     let recovered = false
-    try {
-      result = await postToGroup(page, item, uiProfile)
+    const stopForSafety = await withBrowserSlot(async () => {
+      page = await ensureLivePage()
 
-      if (result === 'REBUILD_AND_RETRY') {
-        browserDeathCount++
+      try {
+        result = await postToGroup(page, item, uiProfile)
 
-        if (browserDeathCount >= 3) {
-          console.log('   ❌ Browser session lost repeatedly. Bot stopped for safety.')
-          await markItem(item.id, 'failed', 'Browser session lost repeatedly')
-          if (BOT_ACCOUNT_ID) await dbUpdate('bot_accounts', BOT_ACCOUNT_ID, { status: 'error' })
-          break
+        if (result === 'REBUILD_AND_RETRY') {
+          browserDeathCount++
+
+          if (browserDeathCount >= 3) {
+            console.log('   ❌ Browser session lost repeatedly. Bot stopped for safety.')
+            await markItem(item.id, 'failed', 'Browser session lost repeatedly')
+            if (BOT_ACCOUNT_ID) await dbUpdate('bot_accounts', BOT_ACCOUNT_ID, { status: 'error' })
+            return true
+          }
+
+          recovered = true
+          page = await recoverRuntimeAfterBrowserDeath()
+          result = await postToGroup(page, item, uiProfile, true)
+          if (result === 'REBUILD_AND_RETRY') result = false
         }
-
-        recovered = true
-        page = await recoverRuntimeAfterBrowserDeath()
-        result = await postToGroup(page, item, uiProfile, true)
-        if (result === 'REBUILD_AND_RETRY') result = false
+      } catch (e) {
+        if (e.message === 'LOGGED_OUT') await stopForLogin(item.id)
+        if (e.message === 'BOT_STOPPED' || !recovered) throw e
+        console.log(`   ❌ Browser recovery failed: ${e.message}`)
+        _postError = `Browser recovery failed: ${e.message}`
+        result = false
       }
-    } catch (e) {
-      if (e.message === 'LOGGED_OUT') await stopForLogin(item.id)
-      if (e.message === 'BOT_STOPPED' || !recovered) throw e
-      console.log(`   ❌ Browser recovery failed: ${e.message}`)
-      _postError = `Browser recovery failed: ${e.message}`
-      result = false
-    }
+      return false
+    }, () => requeueItem(item.id, 'Bot stopped before posting'))
+    if (stopForSafety) break
 
     if (isPostSuccess(result)) {
       browserDeathCount = 0
@@ -1051,7 +1132,7 @@ async function postToGroup(page, item, uiProfile, isRetry = false) {
     page = await ensureLivePage()
 
     console.log(`   🌐 Opening group${isRetry ? ' (retry)' : ''}...`)
-    await page.goto(item.groups.fb_url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+    await openPage(page, item.groups.fb_url)
     await page.bringToFront()
     await interruptibleSleep(randomBetween(3000, 5000))
 
@@ -1129,7 +1210,7 @@ async function postToGroup(page, item, uiProfile, isRetry = false) {
     }
 
     try {
-      await page.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 30000 })
+      await openPage(page, 'https://www.facebook.com/', { retry: false })
       await interruptibleSleep(1500)
     } catch (e) {
       if (e.message === 'BOT_STOPPED') return { ok: true, note }
