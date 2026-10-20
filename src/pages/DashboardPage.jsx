@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useCampaigns } from '../hooks/useCampaigns'
+import { useVisibleInterval } from '../hooks/useVisibleInterval'
 import { supabase } from '../lib/supabase'
 import { dennerSupabase } from '../lib/dennerSupabase'
 import { DnrTag } from '../lib/flatCode'
@@ -1301,10 +1302,7 @@ function BotAccountsSection({ campaigns }) {
     refresh()
   }, [refresh])
 
-  useEffect(() => {
-    const id = setInterval(refresh, 5000)
-    return () => clearInterval(id)
-  }, [refresh])
+  useVisibleInterval(refresh, 15000)
 
   const handleDelete = async id => {
     if (!confirm('Delete this bot account?')) return
@@ -1398,17 +1396,11 @@ export default function DashboardPage() {
   const { campaigns, loading, refetch, updateStatus, retryFailedPosts, deleteCampaign } = useCampaigns()
   const [serverOnline, setServerOnline] = useState(false)
 
-  useEffect(() => {
-    const check = async () => setServerOnline(await checkServer())
-    check()
-    const id = setInterval(check, 10000)
-    return () => clearInterval(id)
-  }, [])
+  const checkOnline = useCallback(async () => setServerOnline(await checkServer()), [])
+  useEffect(() => { checkOnline() }, [checkOnline])
+  useVisibleInterval(checkOnline, 10000)
 
-  useEffect(() => {
-    const id = setInterval(refetch, 30000)
-    return () => clearInterval(id)
-  }, [refetch])
+  useVisibleInterval(refetch, 60000)
 
   const active = campaigns.filter(c => c.status === 'active')
   const paused = campaigns.filter(c => c.status === 'paused')
