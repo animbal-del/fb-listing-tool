@@ -10,7 +10,28 @@
 
 const DEFAULT_CONTACT = process.env.POST_CONTACT_NUMBERS || '9518974818 / 7020738841'
 
-const TLDS = 'com|in|net|org|co|ly|me|io|app|link|gl|info|biz|site|xyz|page|to|us|ai|gle'
+// Numbers that must never be posted (the old Denner number was banned) → replacement.
+// Matches any common format: 9156005618, +91 9156005618, 91560 05618, 091560-05618…
+const REPLACED_NUMBERS = [['9156005618', '9518974818']]
+
+function looseNumberRe(digits) {
+  const body = digits.split('').join(String.raw`[\s.\-]?`)
+  return new RegExp(String.raw`(?<!\d)(?:\+?\s?91[\s.\-]?|0)?${body}(?!\d)`, 'g')
+}
+
+// Final check on the exact text that will be typed into Facebook (listings and messages)
+export function replaceOldNumbers(input) {
+  let text = String(input || '')
+  let replaced = 0
+  for (const [oldNum, newNum] of REPLACED_NUMBERS) {
+    text = text.replace(looseNumberRe(oldNum), () => { replaced++; return newNum })
+    // "9518974818 / 9518974818" (old and new were both listed) → once
+    if (replaced) text = text.replace(new RegExp(`${newNum}(?:\\s*(?:/|,|\\||&|or)\\s*${newNum})+`, 'g'), newNum)
+  }
+  return { text, replaced }
+}
+
+const TLDS ='com|in|net|org|co|ly|me|io|app|link|gl|info|biz|site|xyz|page|to|us|ai|gle'
 const LINK_RE = new RegExp(
   String.raw`(?:[\w.+-]+@)?(?:(?:https?:\/\/|www\.)\S+|\b(?:[a-z0-9-]+\.)+(?:${TLDS})\b(?:\/\S*)?)`,
   'gi'

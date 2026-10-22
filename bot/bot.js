@@ -14,7 +14,7 @@ import { promisify } from 'util'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import 'dotenv/config'
-import { cleanPostText } from './postText.js'
+import { cleanPostText, replaceOldNumbers } from './postText.js'
 import { fillComposer, clearComposer, readComposerText, composerTextMatches, describeMismatch } from './composer.js'
 
 const __dir = dirname(fileURLToPath(import.meta.url))
@@ -37,6 +37,9 @@ let CURRENT_CONTEXT = null
 let CURRENT_PAGE = null
 let COMPOSER_LOCATOR = null
 let LAST_TEXT_MISMATCH = null
+let LAST_NUMBER_FIX = false
+// The post this bot has claimed; `clicked` is set just before Post is pressed
+let CLAIMED_ITEM = null
 let BOT_NAME = 'This bot'
 let _cdTimer = null
 
@@ -50,6 +53,10 @@ const PAGE_LOAD_TIMEOUT_MS = 60 * 1000
 const MAX_ACTIVE_BOTS = Number(process.env.MAX_ACTIVE_BOTS || 2)
 const SLOT_DIR = '/tmp/fb_bot_slots'
 const SLOT_STALE_MS = 20 * 60 * 1000
+
+// Waits at least this long close Chrome so an idle bot holds no memory (it reopens for the next post)
+const BROWSER_IDLE_CLOSE_MS = 3 * 60 * 1000
+const MAX_BROWSER_LAUNCH_FAILURES = 3
 
 // Joining many groups quickly gets accounts checkpointed — cap joins per bot per day
 const MAX_JOINS_PER_DAY = Number(process.env.MAX_JOINS_PER_DAY || 6)
@@ -89,6 +96,7 @@ process.on('SIGTERM', async () => {
   console.log('🛑 Stop signal received')
   stopCountdown()
   await safeCleanupRuntime()
+  await releaseClaimedItem()
   process.exit(0)
 })
 
@@ -97,6 +105,7 @@ process.on('SIGINT', async () => {
   console.log('🛑 Interrupt signal received')
   stopCountdown()
   await safeCleanupRuntime()
+  await releaseClaimedItem()
   process.exit(0)
 })
 
@@ -457,6 +466,15 @@ async function requeueItem(id, note) {
   })
 }
 
+// A claimed post that never reached the Post button goes back to the queue
+// (a bot that stops or crashes mid-run otherwise leaves it stuck in 'processing')
+async function releaseClaimedItem() {
+  const claim = CLAIMED_ITEM
+  CLAIMED_ITEM = null
+  if (!claim || claim.clicked) return
+  await requeueItem(claim.id, 'Bot stopped before posting — returned to the queue')
+}
+
 // ── Group access (which bot can post in which group) ──────
 async function setGroupAccess(groupId, status, { retryMs = null, note = null, joined = false } = {}) {
   if (!BOT_ACCOUNT_ID || !groupId) return
@@ -709,6 +727,13 @@ async function withBrowserSlot(fn, onStopWhileWaiting = null) {
   }
 }
 
+// Before a long wait: close Chrome (frees ~0.5–1 GB per bot); ensureLivePage reopens it
+async function closeBrowserForWait(ms) {
+  if (ms < BROWSER_IDLE_CLOSE_MS || !CURRENT_CONTEXT) return
+  console.log('   💤 Closing browser during the wait to free memory — it reopens for the next post')
+  await safeCleanupRuntime()
+}
+
 async function safeCleanupRuntime() {
   stopCountdown()
 
@@ -939,6 +964,7 @@ async function main() {
   let isFirstPost = true
   let loopCount = 0
   let browserDeathCount = 0
+  let launchFailures = 0
 
   while (true) {
     if (STOP_REQUESTED) throw new Error('BOT_STOPPED')
@@ -976,6 +1002,7 @@ async function main() {
       const waitMs = next - Date.now()
       console.log(`⏰ Outside effective window (${runtime.effectiveStartHour}:00–${runtime.effectiveEndHour}:00)`)
       console.log(`   Current runtime clock: ${now.toString()}`)
+      await closeBrowserForWait(waitMs)
       await interruptibleSleep(waitMs, 'Waiting for posting window')
       continue
     }
@@ -985,6 +1012,7 @@ async function main() {
       next.setDate(next.getDate() + 1)
       next.setHours(runtime.effectiveStartHour, 0, 0, 0)
       console.log(`📊 Effective daily cap reached (${runtime.effectiveMaxPostsPerDay}/day)`)
+      await closeBrowserForWait(next - Date.now())
       await interruptibleSleep(next - Date.now(), 'Waiting for next day')
       continue
     }
@@ -995,12 +1023,14 @@ async function main() {
           Math.random() * (cfg.session_break_max - cfg.session_break_min)) *
         60000
       console.log(`☕ Session break (${cfg.session_cap} posts done)`)
+      await closeBrowserForWait(breakMs)
       await interruptibleSleep(breakMs, 'Session break')
       sessionCount = 0
       continue
     }
 
     const item = await getNextItem()
+    CLAIMED_ITEM = item ? { id: item.id, clicked: false } : null
     if (!item) {
       const counts = await getItemCounts()
 
@@ -1038,8 +1068,23 @@ async function main() {
 
     let result
     let recovered = false
-    const stopForSafety = await withBrowserSlot(async () => {
-      page = await ensureLivePage()
+    const outcome = await withBrowserSlot(async () => {
+      try {
+        page = await ensureLivePage()
+      } catch (e) {
+        if (e.message === 'BOT_STOPPED') throw e
+        launchFailures++
+        console.log(`   ❌ Could not open the browser (${launchFailures}/${MAX_BROWSER_LAUNCH_FAILURES}): ${String(e.message).split('\n')[0]}`)
+        await requeueItem(item.id, 'Bot could not open its browser — returned to the queue')
+        CLAIMED_ITEM = null
+        if (launchFailures >= MAX_BROWSER_LAUNCH_FAILURES) {
+          console.log('   ❌ Browser would not open repeatedly. Bot stopped for safety.')
+          if (BOT_ACCOUNT_ID) await dbUpdate('bot_accounts', BOT_ACCOUNT_ID, { status: 'error' })
+          return 'stop'
+        }
+        return 'launch_failed'
+      }
+      launchFailures = 0
 
       try {
         result = await postToGroup(page, item, uiProfile)
@@ -1051,7 +1096,8 @@ async function main() {
             console.log('   ❌ Browser session lost repeatedly. Bot stopped for safety.')
             await markItem(item.id, 'failed', 'Browser session lost repeatedly')
             if (BOT_ACCOUNT_ID) await dbUpdate('bot_accounts', BOT_ACCOUNT_ID, { status: 'error' })
-            return true
+            CLAIMED_ITEM = null
+            return 'stop'
           }
 
           recovered = true
@@ -1066,13 +1112,20 @@ async function main() {
         _postError = `Browser recovery failed: ${e.message}`
         result = false
       }
-      return false
-    }, () => requeueItem(item.id, 'Bot stopped before posting'))
-    if (stopForSafety) break
+      return 'done'
+    }, releaseClaimedItem)
+    // From here the post is settled (posted / failed / requeued below) — never auto-requeue it
+    CLAIMED_ITEM = null
+    if (outcome === 'stop') break
+    if (outcome === 'launch_failed') {
+      await interruptibleSleep(2 * 60 * 1000, 'Retrying browser')
+      continue
+    }
 
     if (isPostSuccess(result)) {
       browserDeathCount = 0
-      await markItem(item.id, 'posted', result.note || null)
+      const fixNote = LAST_NUMBER_FIX ? 'Old Denner number replaced with 9518974818 — update this listing in the Ops tool' : null
+      await markItem(item.id, 'posted', [result.note, fixNote].filter(Boolean).join(' · ') || null)
       todayCount++
       sessionCount++
 
@@ -1116,6 +1169,7 @@ async function main() {
       console.log(`   ⚡ First post done — next post in ${minM}–${maxM} min`)
     } else {
       const delayMs = getDelay()
+      await closeBrowserForWait(delayMs)
       await interruptibleSleep(delayMs, 'Waiting before next post')
     }
   }
@@ -1141,7 +1195,10 @@ async function postToGroup(page, item, uiProfile, isRetry = false) {
   // Once Post is clicked the listing may be live — never report failure or retry after that
   let postClicked = false
 
-  const text   = item.message ? item.message.text.trim() : buildText(item)
+  const checked = replaceOldNumbers(item.message ? item.message.text.trim() : buildText(item))
+  const text   = checked.text
+  LAST_NUMBER_FIX = checked.replaced > 0
+  if (LAST_NUMBER_FIX) console.log(`   🔁 Old Denner number found in this post — replaced with 9518974818 (${checked.replaced}×)`)
   const propId = item.properties?.id
   const media  = item.message ? [] : collectPropertyMedia(item.properties || {})
   const propLabel  = item.message
@@ -1214,6 +1271,7 @@ async function postToGroup(page, item, uiProfile, isRetry = false) {
     }
 
     console.log('   🖱️ Clicking Post...')
+    if (CLAIMED_ITEM?.id === item.id) CLAIMED_ITEM.clicked = true
     if (!(await clickPost(page, uiProfile))) {
       await page.screenshot({ path: join(__dir, `debug_post_${Date.now()}.png`) })
       logPostError('Post button did not respond', propLabel)
@@ -1781,6 +1839,8 @@ function randomBetween(min, max) {
 main().catch(async (err) => {
   if (err.message === 'BOT_STOPPED') {
     console.log('🛑 Bot stopped cleanly')
+    await safeCleanupRuntime()
+    await releaseClaimedItem()
     cleanPhotoCache()
     if (BOT_ACCOUNT_ID) await dbUpdate('bot_accounts', BOT_ACCOUNT_ID, { status: 'idle' })
     process.exit(0)
@@ -1788,6 +1848,7 @@ main().catch(async (err) => {
 
   console.error('❌ Bot crashed:', err.message)
   await safeCleanupRuntime()
+  await releaseClaimedItem()
   cleanPhotoCache()
   if (BOT_ACCOUNT_ID) await dbUpdate('bot_accounts', BOT_ACCOUNT_ID, { status: 'error' })
   process.exit(1)
