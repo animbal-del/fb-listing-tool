@@ -8,14 +8,14 @@
 
 import { chromium } from 'playwright'
 import { createClient } from '@supabase/supabase-js'
-import { existsSync, writeFileSync, mkdirSync, rmSync, readFileSync, statSync } from 'fs'
+import { existsSync, writeFileSync, mkdirSync, rmSync, readFileSync, statSync, appendFileSync, renameSync } from 'fs'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import 'dotenv/config'
 import { cleanPostText } from './postText.js'
-import { fillComposer, clearComposer, readComposerText, composerTextMatches } from './composer.js'
+import { fillComposer, clearComposer, readComposerText, composerTextMatches, describeMismatch } from './composer.js'
 
 const __dir = dirname(fileURLToPath(import.meta.url))
 
@@ -36,6 +36,7 @@ let STOP_REQUESTED = false
 let CURRENT_CONTEXT = null
 let CURRENT_PAGE = null
 let COMPOSER_LOCATOR = null
+let LAST_TEXT_MISMATCH = null
 let BOT_NAME = 'This bot'
 let _cdTimer = null
 
@@ -56,7 +57,34 @@ const MAX_JOINS_PER_DAY = Number(process.env.MAX_JOINS_PER_DAY || 6)
 const EXIT_NEEDS_LOGIN = 3
 const HOUR_MS = 60 * 60 * 1000
 
+// ── Log file per bot (bot_logs/<id>.log) so a stopped bot's last lines survive ─
+const LOG_FILE = join(__dir, 'bot_logs', `${BOT_ACCOUNT_ID || 'bot'}.log`)
+const LOG_MAX_BYTES = 5 * 1024 * 1024
+function fileLog(...args) {
+  try {
+    mkdirSync(dirname(LOG_FILE), { recursive: true })
+    if (existsSync(LOG_FILE) && statSync(LOG_FILE).size > LOG_MAX_BYTES) renameSync(LOG_FILE, `${LOG_FILE}.1`)
+    const line = args.map(a => (a instanceof Error ? a.stack : typeof a === 'string' ? a : JSON.stringify(a))).join(' ')
+    appendFileSync(LOG_FILE, `${new Date().toISOString()} ${line}\n`)
+  } catch {}
+}
+for (const level of ['log', 'error']) {
+  const original = console[level].bind(console)
+  console[level] = (...args) => { fileLog(...args); original(...args) }
+}
+fileLog(`=== bot.js start pid=${process.pid} campaign=${CAMPAIGN_ID}`)
+process.on('exit', code => fileLog(`=== bot.js exit code=${code}`))
+process.on('uncaughtException', err => {
+  fileLog('uncaughtException:', err)
+  process.exit(1)
+})
+process.on('unhandledRejection', err => {
+  fileLog('unhandledRejection:', err)
+  process.exit(1)
+})
+
 process.on('SIGTERM', async () => {
+  fileLog('SIGTERM received')
   STOP_REQUESTED = true
   console.log('🛑 Stop signal received')
   stopCountdown()
@@ -1159,7 +1187,7 @@ async function postToGroup(page, item, uiProfile, isRetry = false) {
     console.log('   ✍️ Typing text...')
     COMPOSER_LOCATOR = null
     if (!(await typeText(page, text, uiProfile))) {
-      logPostError('Could not type text into composer (text did not match after retry — not posted)', propLabel)
+      logPostError(`Could not type text into composer (text did not match after retry — not posted)${LAST_TEXT_MISMATCH ? ` [${LAST_TEXT_MISMATCH}]` : ''}`, propLabel)
       return false
     }
 
@@ -1653,11 +1681,13 @@ async function typeText(page, text, uiProfile) {
     candidates.push({ locator: page.locator(sel).first(), label: sel })
   }
 
+  LAST_TEXT_MISMATCH = null
   for (const { locator, label } of candidates) {
     try {
       await locator.waitFor({ state: 'visible', timeout: 6000 })
       if (((await locator.getAttribute('aria-label')) || '').toLowerCase().includes('comment')) continue
-      const { ok } = await fillComposer(page, locator, text)
+      const { ok, actual } = await fillComposer(page, locator, text)
+      if (!ok) LAST_TEXT_MISMATCH = describeMismatch(text, actual)
       if (ok) {
         console.log(`   🎯 Text typed and verified (${label})`)
         COMPOSER_LOCATOR = locator

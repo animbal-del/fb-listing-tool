@@ -21,6 +21,16 @@ export function composerTextMatches(expected, actual) {
   return a.length === b.length && a.every((line, i) => line === b[i])
 }
 
+// Short human-readable note on where the composer text differs (for error logs)
+export function describeMismatch(expected, actual) {
+  const a = composerLines(expected)
+  const b = composerLines(actual)
+  const cut = s => (s.length > 60 ? `${s.slice(0, 60)}…` : s)
+  const i = a.findIndex((line, n) => line !== b[n])
+  if (i === -1) return `expected ${a.length} lines, got ${b.length} (extra: "${cut(b[a.length] || '')}")`
+  return `expected ${a.length} lines, got ${b.length}; line ${i + 1} expected "${cut(a[i])}" got "${cut(b[i] ?? '(nothing)')}"`
+}
+
 export async function readComposerText(locator) {
   return await locator.evaluate(el => el.innerText || el.textContent || '')
 }
@@ -57,7 +67,7 @@ export async function fillComposer(page, locator, text, { attempts = 2 } = {}) {
     await sleep(600)
     actual = await readComposerText(locator)
     if (composerTextMatches(text, actual)) return { ok: true, actual }
-    console.log(`   ⚠️ Composer text mismatch (attempt ${attempt}/${attempts}) — expected ${composerLines(text).length} lines, got ${composerLines(actual).length}`)
+    console.log(`   ⚠️ Composer text mismatch (attempt ${attempt}/${attempts}) — ${describeMismatch(text, actual)}`)
   }
   return { ok: false, actual }
 }

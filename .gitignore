@@ -5,6 +5,7 @@ dist/
 bot/.env
 playwright-report/
 temp_photos/
+bot/bot_logs/
 *.log
 .DS_Store
 .claude/settings.local.json
