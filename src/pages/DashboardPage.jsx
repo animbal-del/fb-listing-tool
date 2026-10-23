@@ -1429,6 +1429,8 @@ export default function DashboardPage() {
             sourceCampaignId: campaign.id,
             campaignType: 'message',
             messageId: campaign.message_id,
+            // Multi-message campaigns: the builder matches these texts back to saved messages
+            messageTexts: [...new Set(items.map(item => item.message_text).filter(Boolean))],
             notes: campaign.notes || '',
             postsPerDay: campaign.posts_per_day_limit ?? 18,
             startHour: campaign.posting_start_hour ?? 9,
@@ -1469,7 +1471,7 @@ export default function DashboardPage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-semibold text-ink-100">Dashboard</h1>
-          <p className="text-sm text-ink-400 mt-0.5">Live campaign status · auto-refreshes every 30s</p>
+          <p className="text-sm text-ink-400 mt-0.5">Live campaign status · auto-refreshes every minute</p>
         </div>
         <button onClick={refetch} className="btn-ghost">
           <RefreshCw size={14} /> Refresh

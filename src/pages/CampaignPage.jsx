@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useProperties } from '../hooks/useProperties'
 import { useGroups }     from '../hooks/useGroups'
 import { useCampaigns }  from '../hooks/useCampaigns'
@@ -29,7 +29,8 @@ export default function CampaignPage() {
   const initialMode       = duplicateCampaign?.campaignType || (initialMessageId ? 'message' : 'listing')
 
   const [mode, setMode]                       = useState(initialMode)
-  const [selectedMessageId, setSelectedMessageId] = useState(initialMessageId)
+  // Selection order = posting order: round 1 posts the first message to every group, then the next
+  const [selectedMessageIds, setSelectedMessageIds] = useState(initialMessageId ? [initialMessageId] : [])
   const [messageSearch, setMessageSearch]     = useState('')
   const [expandedRow, setExpandedRow]         = useState(null)
 
@@ -94,7 +95,18 @@ export default function CampaignPage() {
     setExpandedRow(null)
   }
 
-  const selectedMessage  = messages.find(m => m.id === selectedMessageId) || null
+  const selectedMessages = selectedMessageIds.map(id => messages.find(m => m.id === id)).filter(Boolean)
+  const messageTitles    = selectedMessages.map(m => m.title).join(' + ')
+  const toggleMessage = (id) => setSelectedMessageIds(ids => (ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id]))
+
+  // "Create similar" on a multi-message campaign: find its messages from the posted texts
+  // (each message's first group gets the original text)
+  useEffect(() => {
+    const texts = duplicateCampaign?.messageTexts
+    if (!texts?.length || !messages.length) return
+    const ids = messages.filter(m => texts.includes(m.body)).map(m => m.id)
+    if (ids.length) setSelectedMessageIds(prev => [...prev, ...ids.filter(id => !prev.includes(id))])
+  }, [messages]) // eslint-disable-line react-hooks/exhaustive-deps
   const filteredMessages = messages.filter(m => {
     const q = messageSearch.trim().toLowerCase()
     return !q || m.title.toLowerCase().includes(q) || m.body.toLowerCase().includes(q)
@@ -102,13 +114,16 @@ export default function CampaignPage() {
 
   const queueItems = useMemo(() => {
     if (mode === 'message') {
-      if (!selectedMessage) return []
-      // Stable group order (by name) so each group's variation is predictable
-      const gids  = groups.filter(g => selectedGroups.has(g.id)).map(g => g.id)
-      const texts = messageTextsForGroups(selectedMessage.body, gids.length, jitter)
-      return gids.map((gid, i) => ({
-        property_id: null, group_id: gid, message_text: texts[i], variation: i, duplicate_warned: false,
-      }))
+      // Stable group order (by name) so each group's variation is predictable.
+      // Every message goes to every group, one full round per message.
+      const gids = groups.filter(g => selectedGroups.has(g.id)).map(g => g.id)
+      return selectedMessages.flatMap(m => {
+        const texts = messageTextsForGroups(m.body, gids.length, jitter)
+        return gids.map((gid, i) => ({
+          property_id: null, group_id: gid, message_text: texts[i], variation: i, duplicate_warned: false,
+          message_id: m.id,
+        }))
+      })
     }
     const items = []
     for (const pid of selectedProps) {
@@ -117,7 +132,7 @@ export default function CampaignPage() {
       }
     }
     return items
-  }, [mode, selectedMessage, groups, jitter, selectedProps, selectedGroups, dupWarnings])
+  }, [mode, selectedMessages, groups, jitter, selectedProps, selectedGroups, dupWarnings])
 
   const checkDuplicates = async () => {
     const warnings = {}
@@ -141,11 +156,11 @@ export default function CampaignPage() {
     setError(''); setLaunching(true)
     try {
       await createCampaign({
-        notes: notes.trim() || (mode === 'message' ? selectedMessage?.title || '' : ''),
+        notes: notes.trim() || (mode === 'message' ? messageTitles : ''),
         postsPerDay, startHour, endHour, jitter, queueItems,
         campaignType: mode,
-        messageId:    mode === 'message' ? selectedMessage?.id || null : null,
-        messageTitle: mode === 'message' ? selectedMessage?.title || null : null,
+        messageId:    mode === 'message' ? selectedMessages[0]?.id || null : null,
+        messageTitle: mode === 'message' ? messageTitles || null : null,
       })
       navigate('/dashboard')
     } catch (err) { setError(err.message) }
@@ -200,7 +215,10 @@ export default function CampaignPage() {
       {step === 0 && mode === 'message' && (
         <div>
           <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-            <p className="text-sm text-ink-400">Pick the message to post</p>
+            <p className="text-sm text-ink-400">
+              Pick one or more messages
+              {selectedMessages.length > 1 && ' · every message goes to every group, in the order shown'}
+            </p>
             <button onClick={() => navigate('/messages')} className="text-sm text-flame-400 hover:text-flame-300 flex items-center gap-1">
               <Plus size={14}/> Write a new message
             </button>
@@ -224,12 +242,15 @@ export default function CampaignPage() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-6">
               {filteredMessages.map(m => {
-                const sel = selectedMessageId === m.id
+                const order = selectedMessageIds.indexOf(m.id) + 1
+                const sel = order > 0
                 return (
-                  <div key={m.id} onClick={() => setSelectedMessageId(m.id)}
+                  <div key={m.id} onClick={() => toggleMessage(m.id)}
                     className={`card p-4 cursor-pointer transition-all select-none ${sel ? 'border-flame-500/50 bg-flame-500/5' : 'hover:border-ink-600'}`}>
                     <div className="flex items-start gap-3">
-                      <span className={`w-4 h-4 rounded-full border-2 shrink-0 mt-0.5 ${sel ? 'border-flame-400 bg-flame-400' : 'border-ink-500'}`}/>
+                      <span className={`w-5 h-5 rounded-md border-2 shrink-0 flex items-center justify-center text-[11px] font-semibold text-white ${sel ? 'border-flame-400 bg-flame-500' : 'border-ink-500'}`}>
+                        {sel ? order : ''}
+                      </span>
                       <div className="min-w-0 flex-1">
                         <p className="text-sm font-medium text-ink-100 truncate">{m.title}</p>
                         <p className="text-xs text-ink-400 mt-1 whitespace-pre-wrap line-clamp-3">{m.body}</p>
@@ -244,8 +265,11 @@ export default function CampaignPage() {
             </div>
           )}
 
-          <StickyBar info={selectedMessage ? `💬 ${selectedMessage.title}` : 'No message selected'}>
-            <button className="btn-primary" disabled={!selectedMessage} onClick={() => setStep(1)}>
+          <StickyBar info={
+            selectedMessages.length === 0 ? 'No message selected'
+            : selectedMessages.length === 1 ? `💬 ${selectedMessages[0].title}`
+            : `💬 ${selectedMessages.length} messages selected`}>
+            <button className="btn-primary" disabled={!selectedMessages.length} onClick={() => setStep(1)}>
               Next: Select Groups <ChevronRight size={15}/>
             </button>
           </StickyBar>
@@ -397,7 +421,7 @@ export default function CampaignPage() {
             <p className="text-sm text-ink-400">
               {queueItems.length} posts queued
               {mode === 'message' && (jitter
-                ? (selectedMessage && canTweak(selectedMessage.body) ? ' · each group gets a small variation — click a row to preview' : ' · no variations possible for this text')
+                ? (selectedMessages.some(m => canTweak(m.body)) ? ' · each group gets a small variation — click a row to preview' : ' · no variations possible for this text')
                 : ' · group variations off — every group gets the exact text')}
             </p>
             {dupCount > 0 && (
@@ -418,11 +442,12 @@ export default function CampaignPage() {
               <tbody className="divide-y divide-ink-700/50">
                 {mode === 'message' ? queueItems.map((item, i) => {
                   const open = expandedRow === i
-                  const varied = item.message_text !== selectedMessage?.body
+                  const msg = selectedMessages.find(m => m.id === item.message_id)
+                  const varied = item.message_text !== msg?.body
                   return [
                     <tr key={i} onClick={() => setExpandedRow(open ? null : i)} className="cursor-pointer hover:bg-ink-800/30">
                       <td className="px-4 py-2.5 text-ink-200">
-                        💬 {selectedMessage?.title}
+                        💬 {msg?.title}
                         <span className="ml-2 text-xs text-ink-500">{varied ? `Variation ${item.variation + 1}` : 'Original'}</span>
                       </td>
                       <td className="px-4 py-2.5 text-ink-400">{groupMap[item.group_id]?.name}</td>
@@ -469,7 +494,7 @@ export default function CampaignPage() {
           <div className="card p-6 space-y-5 mb-6">
             <div>
               <label className="label">Campaign Notes (optional)</label>
-              <input className="input" placeholder={mode === 'message' ? `Defaults to "${selectedMessage?.title || 'message title'}"` : "e.g. March week 1 — Pune groups"}
+              <input className="input" placeholder={mode === 'message' ? `Defaults to "${messageTitles || 'message title'}"` : "e.g. March week 1 — Pune groups"}
                 value={notes} onChange={e => setNotes(e.target.value)}/>
             </div>
             <div className="grid grid-cols-2 gap-4">
