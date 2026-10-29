@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
     net-tools \
     iproute2 \
     imagemagick \
+    tini \
  && rm -rf /var/lib/apt/lists/*
 
 RUN npx playwright install --with-deps chromium
@@ -24,4 +25,6 @@ COPY . .
 
 EXPOSE 3001
 
+# tini as PID 1 reaps orphaned Chrome processes (node does not)
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "server.js"]

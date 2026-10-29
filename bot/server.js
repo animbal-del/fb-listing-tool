@@ -119,6 +119,15 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms))
 }
 
+// server.js is PID 1 in the container and never reaps orphaned Chrome helpers, so they
+// pile up as zombies until Chrome can't start (pids limit). tini -s adopts and reaps them.
+const TINI = ['/usr/bin/tini', '/usr/local/bin/tini'].find(p => existsSync(p))
+
+function spawnNode(script, opts) {
+  const path = join(__dir, script)
+  return TINI ? spawn(TINI, ['-s', '--', 'node', path], opts) : spawn('node', [path], opts)
+}
+
 function runDetached(cmd, args = []) {
   const proc = spawn(cmd, args, {
     cwd: __dir,
@@ -364,7 +373,7 @@ async function handleLoginRemote(req, res) {
     pushLog(id, `🖥️ Remote viewer: ${viewerUrl}`)
     pushLog(id, remote.reused ? '♻️ Reusing shared remote desktop' : '🆕 Started shared remote desktop')
 
-    const proc = spawn('node', [join(__dir, 'login.js')], { env, cwd: __dir })
+    const proc = spawnNode('login.js', { env, cwd: __dir })
     procs[id] = { ...(procs[id] || {}), proc, type: 'login', logs: procs[id]?.logs || [] }
 
     proc.stdout.on('data', d => String(d).split('\n').filter(Boolean).forEach(l => pushLog(id, l)))
@@ -421,7 +430,7 @@ app.post('/bots/:id/start', async (req, res) => {
 
     const spawnBot = (cid) => {
       const env = { ...process.env, BOT_ACCOUNT_ID: id, SESSION_FILE: sp, CAMPAIGN_ID: cid }
-      const p = spawn('node', [join(__dir, 'bot.js')], { env, cwd: __dir })
+      const p = spawnNode('bot.js', { env, cwd: __dir })
       procs[id] = { ...(procs[id] || {}), proc: p, type: 'bot', campaignId: cid }
 
       p.stdout.on('data', d => String(d).split('\n').filter(Boolean).forEach(l => pushLog(id, l)))
