@@ -420,13 +420,6 @@ app.post('/bots/:id/start', async (req, res) => {
     pushLog(id, `🚀 Starting: ${bot.name}`)
     pushLog(id, `📋 Campaign: ${campaignId}`)
 
-    const snapshot = await getCampaignSummary(campaignId)
-    if (snapshot.campaign) {
-      pushLog(
-        id,
-        `📈 Campaign snapshot — pending: ${snapshot.pendingCount}, processing: ${snapshot.processingCount}, posted: ${snapshot.postedCount}, daily cap: ${snapshot.campaign.posts_per_day_limit}`
-      )
-    }
 
     const spawnBot = (cid) => {
       const env = { ...process.env, BOT_ACCOUNT_ID: id, SESSION_FILE: sp, CAMPAIGN_ID: cid }
@@ -479,6 +472,17 @@ app.post('/bots/:id/start', async (req, res) => {
 
     spawnBot(campaignId)
     res.json({ ok: true })
+
+    // Log-only snapshot — after replying so the dashboard doesn't wait on 4 more queries
+    getCampaignSummary(campaignId)
+      .then(snapshot => {
+        if (!snapshot.campaign) return
+        pushLog(
+          id,
+          `📈 Campaign snapshot — pending: ${snapshot.pendingCount}, processing: ${snapshot.processingCount}, posted: ${snapshot.postedCount}, daily cap: ${snapshot.campaign.posts_per_day_limit}`
+        )
+      })
+      .catch(() => {})
   } catch (e) {
     console.error('/start error:', e.message)
     res.status(500).json({ error: e.message })

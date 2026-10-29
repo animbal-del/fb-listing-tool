@@ -32,7 +32,7 @@ export default function Modal({ open, title, onClose, children, size = 'md' }) {
   return createPortal(
     <div className="fixed inset-0 z-[1000]">
       <div
-        className="absolute inset-0 bg-ink-900/80 backdrop-blur-sm"
+        className="absolute inset-0 bg-ink-900/85"
         onClick={onClose}
       />
 

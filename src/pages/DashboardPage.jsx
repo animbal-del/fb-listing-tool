@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useCampaigns } from '../hooks/useCampaigns'
+import { useCampaigns, fetchCampaignItems } from '../hooks/useCampaigns'
 import { useVisibleInterval } from '../hooks/useVisibleInterval'
 import { supabase } from '../lib/supabase'
 import { dennerSupabase } from '../lib/dennerSupabase'
@@ -404,13 +404,33 @@ function PostActivityLog({ items, messageTitle }) {
 function CampaignRow({ campaign, onToggle, onRetryFailed, onDelete, onDuplicate }) {
   const [expanded, setExpanded] = useState(false)
   const [retrying, setRetrying] = useState(false)
-  const items = campaign.post_queue || []
-  const posted = items.filter(i => i.status === 'posted').length
-  const failed = items.filter(i => i.status === 'failed').length
-  const skipped = items.filter(i => i.status === 'skipped').length
+  const [items, setItems] = useState(null)
+  const [exporting, setExporting] = useState(false)
+  const { total = 0, posted = 0, failed = 0, skipped = 0 } = campaign.stats || {}
 
-  const exportCSV = () => {
-    const rows = items
+  // Post details load only while "View Posts" is open, and reload when the counts change
+  const statsKey = JSON.stringify(campaign.stats || {})
+  useEffect(() => {
+    if (!expanded) return
+    let cancelled = false
+    fetchCampaignItems(campaign.id)
+      .then(rows => { if (!cancelled) setItems(rows) })
+      .catch(err => console.error('fetchCampaignItems:', err.message))
+    return () => { cancelled = true }
+  }, [expanded, campaign.id, statsKey])
+
+  const exportCSV = async () => {
+    setExporting(true)
+    let allItems
+    try {
+      allItems = await fetchCampaignItems(campaign.id)
+    } catch (err) {
+      alert(err.message || 'Could not load posts for export')
+      return
+    } finally {
+      setExporting(false)
+    }
+    const rows = allItems
       .map(
         q =>
           `"${q.message_text ? `Message: ${campaign.message_title || ''}` : q.properties?.title || ''}","${q.groups?.name || ''}","${q.assigned_bot_name || q.assigned_bot_id || ''}","${q.status}","${q.scheduled_at || ''}","${q.posted_at || ''}","${q.post_url || ''}","${q.error_log || ''}"`
@@ -481,8 +501,8 @@ function CampaignRow({ campaign, onToggle, onRetryFailed, onDelete, onDuplicate 
                 <RefreshCw size={13} /> {retrying ? 'Retrying…' : `Retry Failed (${failed})`}
               </button>
             )}
-            <button onClick={exportCSV} className="btn-ghost py-1.5 text-xs">
-              <Download size={13} /> Export
+            <button onClick={exportCSV} disabled={exporting} className="btn-ghost py-1.5 text-xs">
+              <Download size={13} /> {exporting ? 'Exporting…' : 'Export'}
             </button>
             <button onClick={() => onDuplicate(campaign)} className="btn-ghost py-1.5 text-xs">
               <CopyPlus size={13} /> Create Similar
@@ -506,9 +526,11 @@ function CampaignRow({ campaign, onToggle, onRetryFailed, onDelete, onDuplicate 
             </button>
           </div>
         </div>
-        <ProgressBar total={items.length} posted={posted} failed={failed} skipped={skipped} />
+        <ProgressBar total={total} posted={posted} failed={failed} skipped={skipped} />
       </div>
-      {expanded && <PostActivityLog items={items} messageTitle={campaign.message_title} />}
+      {expanded && (items
+        ? <PostActivityLog items={items} messageTitle={campaign.message_title} />
+        : <p className="border-t border-ink-700 text-center text-ink-500 text-xs py-8">Loading posts…</p>)}
     </div>
   )
 }
@@ -912,9 +934,7 @@ function StartBotModal({ open, bot, campaigns, onClose, onConfirm }) {
         ) : (
           <div className="space-y-2">
             {activeCampaigns.map(c => {
-              const items = c.post_queue || []
-              const pending = items.filter(i => i.status === 'pending').length
-              const posted = items.filter(i => i.status === 'posted').length
+              const { pending = 0, posted = 0, total = 0 } = c.stats || {}
               return (
                 <div
                   key={c.id}
@@ -928,7 +948,7 @@ function StartBotModal({ open, bot, campaigns, onClose, onConfirm }) {
                     {selected === c.id && <Check size={14} className="text-flame-400" />}
                   </div>
                   <p className="text-xs text-ink-500 mt-0.5">
-                    {pending} pending · {posted} posted · {items.length} total
+                    {pending} pending · {posted} posted · {total} total
                   </p>
                 </div>
               )
@@ -1007,9 +1027,8 @@ function CampaignQueueModal({ open, bot, campaigns, onClose }) {
             <div className="space-y-2">
               {queue.map((cid, i) => {
                 const c = campaigns.find(x => x.id === cid)
-                const items = c?.post_queue || []
-                const pending = items.filter(x => x.status === 'pending').length
-                const posted = items.filter(x => x.status === 'posted').length
+                const pending = c?.stats?.pending || 0
+                const posted = c?.stats?.posted || 0
                 return (
                   <div key={cid} className="flex items-center gap-2 bg-ink-800 border border-ink-700 rounded-xl px-3 py-2">
                     <span className="text-ink-600 text-xs w-5 flex-shrink-0">{i + 1}.</span>
@@ -1043,8 +1062,7 @@ function CampaignQueueModal({ open, bot, campaigns, onClose }) {
               {activeCampaigns
                 .filter(c => !queue.includes(c.id))
                 .map(c => {
-                  const items = c.post_queue || []
-                  const pending = items.filter(x => x.status === 'pending').length
+                  const pending = c.stats?.pending || 0
                   return (
                     <div
                       key={c.id}
@@ -1259,32 +1277,36 @@ function BotCard({ bot, campaigns, serverOnline, onEdit, onDelete, onRefresh }) 
   )
 }
 
-function BotAccountsSection({ campaigns }) {
+function BotAccountsSection({ campaigns, onOnlineChange }) {
   const [bots, setBots] = useState([])
   const [loading, setLoading] = useState(true)
   const [online, setOnline] = useState(false)
   const [formModal, setFormModal] = useState(null)
 
   const refresh = useCallback(async () => {
+    // All three requests run at once; saved bots show as soon as the database answers
+    const serverUpP = checkServer()
+    const serverBotsP = fetchBots().catch(e => {
+      console.error('fetchBots error:', e.message)
+      return null
+    })
+
     const { data: dbBots, error: dbErr } = await supabase.from('bot_accounts').select(BOT_COLUMNS).order('created_at')
     if (dbErr) console.error('bot_accounts:', dbErr.message)
 
-    const serverUp = await checkServer()
-    setOnline(serverUp)
+    // First load only: cards appear now, live status fills in below
+    setBots(prev => (prev.length ? prev : (dbBots || []).map(b => ({ ...b, isRunning: false, isLoggingIn: false }))))
+    setLoading(false)
 
-    if (serverUp) {
-      try {
-        const serverBots = await fetchBots()
-        if (Array.isArray(serverBots) && serverBots.length > 0) {
-          // Server omits fb_password; keep the DB row's fields for the edit form
-          const dbById = Object.fromEntries((dbBots || []).map(b => [b.id, b]))
-          setBots(serverBots.map(b => ({ ...dbById[b.id], ...b })))
-          setLoading(false)
-          return
-        }
-      } catch (e) {
-        console.error('fetchBots error:', e.message)
-      }
+    const [serverUp, serverBots] = await Promise.all([serverUpP, serverBotsP])
+    setOnline(serverUp)
+    onOnlineChange?.(serverUp)
+
+    if (serverUp && Array.isArray(serverBots) && serverBots.length > 0) {
+      // Server omits fb_password; keep the DB row's fields for the edit form
+      const dbById = Object.fromEntries((dbBots || []).map(b => [b.id, b]))
+      setBots(serverBots.map(b => ({ ...dbById[b.id], ...b })))
+      return
     }
 
     setBots(
@@ -1295,8 +1317,7 @@ function BotAccountsSection({ campaigns }) {
         isLoggingIn: false,
       }))
     )
-    setLoading(false)
-  }, [])
+  }, [onOnlineChange])
 
   useEffect(() => {
     refresh()
@@ -1394,29 +1415,31 @@ function ServerBanner({ online }) {
 export default function DashboardPage() {
   const navigate = useNavigate()
   const { campaigns, loading, refetch, updateStatus, retryFailedPosts, deleteCampaign } = useCampaigns()
-  const [serverOnline, setServerOnline] = useState(false)
-
-  const checkOnline = useCallback(async () => setServerOnline(await checkServer()), [])
-  useEffect(() => { checkOnline() }, [checkOnline])
-  useVisibleInterval(checkOnline, 10000)
+  const [serverOnline, setServerOnline] = useState(true)
 
   useVisibleInterval(refetch, 60000)
 
   const active = campaigns.filter(c => c.status === 'active')
   const paused = campaigns.filter(c => c.status === 'paused')
   const completed = campaigns.filter(c => c.status === 'completed')
-  const allItems = campaigns.flatMap(c => c.post_queue || [])
-  const totalPosted = allItems.filter(q => q.status === 'posted').length
-  const totalPending = allItems.filter(q => q.status === 'pending').length
-  const totalFailed = allItems.filter(q => q.status === 'failed').length
+  const sumStat = key => campaigns.reduce((n, c) => n + (c.stats?.[key] || 0), 0)
+  const totalPosted = sumStat('posted')
+  const totalPending = sumStat('pending')
+  const totalFailed = sumStat('failed')
 
 
   const handleDelete = async (campaignId) => {
     await deleteCampaign(campaignId)
   }
 
-  const handleDuplicate = (campaign) => {
-    const items = campaign.post_queue || []
+  const handleDuplicate = async (campaign) => {
+    let items
+    try {
+      items = await fetchCampaignItems(campaign.id)
+    } catch (err) {
+      alert(err.message || 'Could not load this campaign')
+      return
+    }
 
     if (campaign.campaign_type === 'message') {
       if (!campaign.message_id) {
@@ -1495,7 +1518,7 @@ export default function DashboardPage() {
       </div>
 
       <div className="mb-8">
-        <BotAccountsSection campaigns={campaigns} />
+        <BotAccountsSection campaigns={campaigns} onOnlineChange={setServerOnline} />
       </div>
 
       <h2 className="text-xs font-semibold text-ink-500 uppercase tracking-wider mb-3">Campaigns</h2>

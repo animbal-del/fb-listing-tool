@@ -22,7 +22,7 @@ export default function CampaignPage() {
   const location = useLocation()
   const { properties } = useProperties()
   const { groups }     = useGroups()
-  const { createCampaign } = useCampaigns()
+  const { createCampaign } = useCampaigns({ autoload: false })
   const { messages, loading: messagesLoading } = useMessages()
   const duplicateCampaign = location.state?.duplicateCampaign || null
   const initialMessageId  = duplicateCampaign?.messageId || location.state?.messageId || null

@@ -36,100 +36,112 @@ async function fetchPropertyMap(propertyIds) {
   return map
 }
 
-export function useCampaigns() {
-  const [campaigns, setCampaigns] = useState([])
-  const [loading, setLoading]     = useState(true)
+const ITEM_COLUMNS = `
+  id,
+  property_id,
+  group_id,
+  status,
+  scheduled_at,
+  posted_at,
+  post_url,
+  error_log,
+  assigned_bot_id,
+  claimed_at,
+  duplicate_warned,
+  message_text,
+  groups ( id, name, fb_url )
+`
 
+// PostgREST returns at most 1000 rows per request
+async function fetchAllRows(build) {
+  const rows = []
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await build().range(from, from + 999)
+    if (error) throw new Error(error.message)
+    rows.push(...(data || []))
+    if (!data || data.length < 1000) return rows
+  }
+}
+
+// Per-campaign post counts: { [campaignId]: { total, posted, pending, failed, skipped, processing } }
+async function fetchCampaignStats() {
+  let rows
+  const { data, error } = await supabase.rpc('campaign_post_stats')
+  if (!error) {
+    rows = data || []
+  } else {
+    // campaign_post_stats() not installed yet (supabase_campaign_stats.sql) — count from statuses only
+    const items = await fetchAllRows(() => supabase.from('post_queue').select('campaign_id, status').order('id'))
+    rows = items.map(i => ({ campaign_id: i.campaign_id, status: i.status, n: 1 }))
+  }
+
+  const stats = {}
+  for (const r of rows) {
+    if (!stats[r.campaign_id]) stats[r.campaign_id] = { total: 0, posted: 0, pending: 0, failed: 0, skipped: 0, processing: 0 }
+    const st = stats[r.campaign_id]
+    const n = Number(r.n) || 0
+    st.total += n
+    st[r.status] = (st[r.status] || 0) + n
+  }
+  return stats
+}
+
+// Every post of one campaign, with property and bot names (for View Posts / Export / Create Similar)
+export async function fetchCampaignItems(campaignId) {
+  const items = await fetchAllRows(() =>
+    supabase.from('post_queue').select(ITEM_COLUMNS).eq('campaign_id', campaignId).order('scheduled_at')
+  )
+
+  const propertyIds = [...new Set(items.map(q => q.property_id).filter(Boolean))]
+  const botIds = [...new Set(items.map(q => q.assigned_bot_id).filter(Boolean))]
+
+  const [propertyMap, botsRes] = await Promise.all([
+    fetchPropertyMap(propertyIds),
+    botIds.length
+      ? supabase.from('bot_accounts').select('id, name').in('id', botIds)
+      : Promise.resolve({ data: [] }),
+  ])
+  if (botsRes.error) console.error('fetchCampaignItems bot lookup error:', botsRes.error)
+  const botNameMap = new Map((botsRes.data || []).map(bot => [bot.id, bot.name]))
+
+  return items.map(item => ({
+    ...item,
+    properties:        propertyMap.get(item.property_id) || null,
+    assigned_bot_name: item.assigned_bot_id ? botNameMap.get(item.assigned_bot_id) || null : null,
+  }))
+}
+
+// autoload: false for pages that only create campaigns and don't list them
+export function useCampaigns({ autoload = true } = {}) {
+  const [campaigns, setCampaigns] = useState([])
+  const [loading, setLoading]     = useState(autoload)
+
+  // Campaign rows plus post counts only — post details load per campaign on demand.
+  // Background refreshes keep the current list on screen (no loading flash).
   const fetch = useCallback(async () => {
-    setLoading(true)
     try {
-      const { data, error } = await supabase
-        .from('campaigns')
-        .select(`
-          *,
-          post_queue (
-            id,
-            property_id,
-            group_id,
-            status,
-            scheduled_at,
-            posted_at,
-            post_url,
-            error_log,
-            assigned_bot_id,
-            claimed_at,
-            duplicate_warned,
-            message_text,
-            groups ( id, name, fb_url )
-          )
-        `)
-        .order('created_at', { ascending: false })
+      const [{ data, error }, stats] = await Promise.all([
+        supabase.from('campaigns').select('*').order('created_at', { ascending: false }),
+        fetchCampaignStats(),
+      ])
 
       if (error) {
         console.error('useCampaigns fetch error:', error)
-        setCampaigns([])
         return
       }
 
-      // Collect unique bigint property IDs across all campaigns
-      const propertyIds = [
-        ...new Set(
-          (data || [])
-            .flatMap(c => c.post_queue || [])
-            .map(q => q.property_id)
-            .filter(Boolean)
-        ),
-      ]
-
-      const propertyMap = await fetchPropertyMap(propertyIds)
-
-      // Bot name lookup (still on old Supabase)
-      const botIds = [
-        ...new Set(
-          (data || [])
-            .flatMap(c => c.post_queue || [])
-            .map(q => q.assigned_bot_id)
-            .filter(Boolean)
-        ),
-      ]
-
-      let botNameMap = new Map()
-      if (botIds.length > 0) {
-        const { data: bots, error: botError } = await supabase
-          .from('bot_accounts')
-          .select('id, name')
-          .in('id', botIds)
-
-        if (botError) {
-          console.error('useCampaigns bot lookup error:', botError)
-        } else {
-          botNameMap = new Map((bots || []).map(bot => [bot.id, bot.name]))
-        }
-      }
-
-      const enriched = (data || []).map(campaign => ({
-        ...campaign,
-        post_queue: (campaign.post_queue || []).map(item => ({
-          ...item,
-          properties:      propertyMap.get(item.property_id) || null,
-          assigned_bot_name: item.assigned_bot_id
-            ? botNameMap.get(item.assigned_bot_id) || null
-            : null,
-        })),
-      }))
-
-      setCampaigns(enriched)
+      const empty = { total: 0, posted: 0, pending: 0, failed: 0, skipped: 0, processing: 0 }
+      setCampaigns((data || []).map(c => ({ ...c, stats: stats[c.id] || empty })))
     } catch (e) {
       console.error('useCampaigns unexpected error:', e)
-      setCampaigns([])
     } finally {
       setLoading(false)
     }
   }, [])
 
   useEffect(() => {
-    fetch()
-  }, [fetch])
+    if (autoload) fetch()
+  }, [fetch, autoload])
 
   const createCampaign = async ({
     notes, postsPerDay, startHour, endHour, jitter, queueItems,
@@ -204,7 +216,7 @@ export function useCampaigns() {
       if (qe) throw new Error(qe.message)
     }
 
-    await fetch()
+    if (autoload) await fetch()
     return campaign
   }
 
