@@ -14,7 +14,9 @@ import {
   CheckCircle, Wifi, WifiOff, Clock, XCircle, ImageOff, ListPlus, CopyPlus, ExternalLink, MessageSquare
 } from 'lucide-react'
 
-const BOT_API = (import.meta.env.VITE_BOT_SERVER_URL || '/bot-api').replace(/\/$/, '')
+// Direct to the bot server (CORS is open; auth is the Denner session token). The Vercel
+// /bot-api rewrite to http://<ip>:3001 drops or 403s a large share of requests.
+const BOT_API = (import.meta.env.VITE_BOT_SERVER_URL || 'https://bot.denner.in').replace(/\/$/, '')
 
 // noVNC viewer for the bot's hosted browser (Facebook login / 2FA). Served over HTTPS
 // by the bot server; the /bot-api rewrite can't proxy websockets, so fall back to the domain.
@@ -47,6 +49,7 @@ async function getAccessToken() {
 async function apiFetch(path, options = {}) {
   const token = await getAccessToken()
   const res = await fetch(`${BOT_API}${path}`, {
+    signal: AbortSignal.timeout(options.method ? 30000 : 10000),
     ...options,
     headers: {
       'Content-Type': 'application/json',
@@ -1189,6 +1192,10 @@ function BotCard({ bot, campaigns, serverOnline, onEdit, onDelete, onRefresh }) 
             <p className="text-xs text-jade-500 flex items-center gap-1.5">
               <CheckCircle size={10} /> Session saved
             </p>
+          ) : bot.hasSession == null ? (
+            <p className="text-xs text-ink-500 flex items-center gap-1.5">
+              <WifiOff size={10} /> {serverOnline ? 'Checking session…' : 'Session status unknown — bot server not reachable'}
+            </p>
           ) : (
             <p className="text-xs text-yellow-500 flex items-center gap-1.5">
               <AlertTriangle size={10} /> Login required
@@ -1282,6 +1289,7 @@ function BotAccountsSection({ campaigns, onOnlineChange }) {
   const [loading, setLoading] = useState(true)
   const [online, setOnline] = useState(false)
   const [formModal, setFormModal] = useState(null)
+  const failedChecks = useRef(0)
 
   const refresh = useCallback(async () => {
     // All three requests run at once; saved bots show as soon as the database answers
@@ -1299,20 +1307,28 @@ function BotAccountsSection({ campaigns, onOnlineChange }) {
     setLoading(false)
 
     const [serverUp, serverBots] = await Promise.all([serverUpP, serverBotsP])
-    setOnline(serverUp)
-    onOnlineChange?.(serverUp)
 
     if (serverUp && Array.isArray(serverBots) && serverBots.length > 0) {
+      failedChecks.current = 0
+      setOnline(true)
+      onOnlineChange?.(true)
       // Server omits fb_password; keep the DB row's fields for the edit form
       const dbById = Object.fromEntries((dbBots || []).map(b => [b.id, b]))
       setBots(serverBots.map(b => ({ ...dbById[b.id], ...b })))
       return
     }
 
+    // One missed check is usually a network blip — keep the last live status until two in a row fail
+    failedChecks.current += 1
+    if (failedChecks.current < 2) return
+    setOnline(false)
+    onOnlineChange?.(false)
+
+    // Session and running state are unknown while the server can't be reached (not "logged out")
     setBots(
       (dbBots || []).map(b => ({
         ...b,
-        hasSession: false,
+        hasSession: null,
         isRunning: false,
         isLoggingIn: false,
       }))
