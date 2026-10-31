@@ -15,8 +15,10 @@ import {
 } from 'lucide-react'
 
 // Direct to the bot server (CORS is open; auth is the Denner session token). The Vercel
-// /bot-api rewrite to http://<ip>:3001 drops or 403s a large share of requests.
-const BOT_API = (import.meta.env.VITE_BOT_SERVER_URL || 'https://bot.denner.in').replace(/\/$/, '')
+// /bot-api rewrite to http://<ip>:3001 drops or 403s a large share of requests, so a
+// relative VITE_BOT_SERVER_URL (Vercel production still has "/bot-api") is ignored.
+const ENV_BOT_API = import.meta.env.VITE_BOT_SERVER_URL || ''
+const BOT_API = (ENV_BOT_API.startsWith('http') ? ENV_BOT_API : 'https://bot.denner.in').replace(/\/$/, '')
 
 // noVNC viewer for the bot's hosted browser (Facebook login / 2FA). Served over HTTPS
 // by the bot server; the /bot-api rewrite can't proxy websockets, so fall back to the domain.
